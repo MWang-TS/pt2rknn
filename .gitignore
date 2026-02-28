@@ -1,0 +1,49 @@
+# .gitignore for PT to RKNN Tool
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# 上传和输出目录
+uploads/*
+!uploads/.gitkeep
+output/*
+!output/.gitkeep
+
+# 校准数据集图片
+calibration_data/images/*
+!calibration_data/images/.gitkeep
+
+# 实际的校准配置文件（包含敏感路径）
+calibration_data/calibration.txt
+
+# Flask
+instance/
+.webassets-cache
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+
+# 临时文件
+*.tmp
+*.temp
