@@ -19,11 +19,14 @@ uploads/*
 output/*
 !output/.gitkeep
 
-# 校准数据集图片
-calibration_data/images/*
-!calibration_data/images/.gitkeep
-
-# 实际的校准配置文件（包含敏感路径）
+# 校准数据集图片（仅保留目录结构）
+calibration_data/coco/images/*
+!calibration_data/coco/images/.gitkeep
+calibration_data/imagenet/images/*
+!calibration_data/imagenet/images/.gitkeep
+calibration_data/face/images/*
+!calibration_data/face/images/.gitkeep
+calibration_data/*/dataset.txt
 calibration_data/calibration.txt
 
 # Flask

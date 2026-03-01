@@ -1,5 +1,6 @@
 """
-PT to RKNN 转换工具 - Flask Web服务
+PT to RKNN 转换工具 - Flask Web服务 v2
+支持：YOLOv8-Det/Seg/Pose/OBB、ResNet、RetinaFace
 """
 import os
 import time
@@ -7,7 +8,9 @@ import json
 import socket
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
-from converter import PT2RKNNConverter
+from converter import UniversalConverter
+from model_registry import MODEL_REGISTRY, get_model_types_meta, validate_file_ext, validate_pt_task
+from calibration_builder import build_calibration_dataset, get_calibration_status, detect_dataset_format
 try:
     import netron
     NETRON_AVAILABLE = True
@@ -25,7 +28,7 @@ for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.con
     os.makedirs(folder, exist_ok=True)
 
 # 允许的文件扩展名
-ALLOWED_EXTENSIONS = {'pt', 'pth'}
+ALLOWED_EXTENSIONS = {'pt', 'pth', 'onnx'}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -35,6 +38,46 @@ def allowed_file(filename):
 def index():
     """主页"""
     return render_template('index.html')
+
+
+@app.route('/api/model_types', methods=['GET'])
+def get_model_types():
+    """获取支持的模型类型列表"""
+    return jsonify({'model_types': get_model_types_meta()})
+
+
+@app.route('/api/validate', methods=['POST'])
+def validate_model():
+    """校验上传文件是否与所选模型类型匹配"""
+    if 'model_file' not in request.files:
+        return jsonify({'valid': False, 'message': '未提供模型文件'}), 400
+
+    file = request.files['model_file']
+    model_type = request.form.get('model_type', '')
+    if not model_type:
+        return jsonify({'valid': False, 'message': '未提供模型类型'}), 400
+
+    # 扩展名校验
+    ok, msg = validate_file_ext(model_type, file.filename)
+    if not ok:
+        return jsonify({'valid': False, 'message': msg})
+
+    # PT 文件进一步 task 校验（需要先保存）
+    ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+    if ext in ('pt', 'pth'):
+        tmp_path = os.path.join(app.config['UPLOAD_FOLDER'],
+                                f"_validate_{int(time.time())}_{secure_filename(file.filename)}")
+        file.save(tmp_path)
+        try:
+            ok, msg = validate_pt_task(model_type, tmp_path)
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        return jsonify({'valid': ok, 'message': msg})
+
+    return jsonify({'valid': True, 'message': '✅ 文件格式校验通过'})
 
 
 @app.route('/api/platforms', methods=['GET'])
@@ -53,65 +96,55 @@ def get_platforms():
 @app.route('/api/convert', methods=['POST'])
 def convert_model():
     """处理模型转换请求"""
+    upload_path = None
     try:
-        # 检查文件
         if 'model_file' not in request.files:
             return jsonify({'success': False, 'message': '未上传模型文件'}), 400
-        
+
         file = request.files['model_file']
         if file.filename == '':
             return jsonify({'success': False, 'message': '未选择文件'}), 400
-        
+
         if not allowed_file(file.filename):
-            return jsonify({'success': False, 'message': '只支持.pt和.pth文件'}), 400
-        
+            return jsonify({'success': False, 'message': '只支持 .pt / .pth / .onnx 文件'}), 400
+
         # 获取参数
-        platform = request.form.get('platform', 'rk3576')
+        model_type = request.form.get('model_type', 'yolov8_det')
+        platform   = request.form.get('platform', 'rk3576')
         quant_type = request.form.get('quant_type', 'i8')
-        input_width = int(request.form.get('input_width', 640))
+        input_width  = int(request.form.get('input_width', 640))
         input_height = int(request.form.get('input_height', 640))
-        
-        # 保存上传的文件
+
+        # 快速扩展名校验
+        ok, msg = validate_file_ext(model_type, file.filename)
+        if not ok:
+            return jsonify({'success': False, 'message': msg}), 400
+
+        # 保存上传文件
         filename = secure_filename(file.filename)
         timestamp = int(time.time())
-        upload_filename = f"{timestamp}_{filename}"
-        upload_path = os.path.join(app.config['UPLOAD_FOLDER'], upload_filename)
+        upload_path = os.path.join(app.config['UPLOAD_FOLDER'],
+                                    f"{timestamp}_{filename}")
         file.save(upload_path)
-        
+
         # 设置输出路径
         model_name = os.path.splitext(filename)[0]
-        output_filename = f"{model_name}_{platform}_{quant_type}_{timestamp}.rknn"
+        output_filename = f"{model_name}_{model_type}_{platform}_{quant_type}_{timestamp}.rknn"
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
-        
-        # 设置校准数据集（量化时需要）
-        do_quant = (quant_type == 'i8')
-        dataset_path = None
-        if do_quant:
-            dataset_path = os.path.join(app.config['CALIBRATION_FOLDER'], 'calibration.txt')
-            if not os.path.exists(dataset_path):
-                # 如果没有校准数据集，使用默认的或提示用户
-                return jsonify({
-                    'success': False, 
-                    'message': '量化模式需要校准数据集。请在calibration_data目录下准备calibration.txt文件'
-                }), 400
-        
+
         # 执行转换
-        converter = PT2RKNNConverter(verbose=True)
-        success, message, output_file = converter.convert(
-            pt_model_path=upload_path,
+        do_quant = (quant_type == 'i8')
+        converter = UniversalConverter(verbose=True)
+        success, message, _ = converter.convert(
+            model_type=model_type,
+            input_path=upload_path,
             platform=platform,
             do_quant=do_quant,
-            dataset_path=dataset_path,
+            calibration_dir=app.config['CALIBRATION_FOLDER'],
             output_path=output_path,
-            input_size=(input_height, input_width)
+            input_size=(input_height, input_width),
         )
-        
-        # 清理上传的文件
-        try:
-            os.remove(upload_path)
-        except:
-            pass
-        
+
         if success:
             return jsonify({
                 'success': True,
@@ -121,9 +154,16 @@ def convert_model():
             })
         else:
             return jsonify({'success': False, 'message': message}), 500
-            
+
     except Exception as e:
         return jsonify({'success': False, 'message': f'转换失败: {str(e)}'}), 500
+
+    finally:
+        if upload_path and os.path.exists(upload_path):
+            try:
+                os.remove(upload_path)
+            except Exception:
+                pass
 
 
 def get_free_port():
@@ -131,6 +171,63 @@ def get_free_port():
     with socket.socket() as s:
         s.bind(('', 0))
         return s.getsockname()[1]
+
+
+@app.route('/api/calibration/status', methods=['GET'])
+def calibration_status():
+    """查询各模型类型校准数据集是否就绪"""
+    model_type = request.args.get('model_type', '')
+    if model_type not in MODEL_REGISTRY:
+        return jsonify({'success': False, 'message': '未知模型类型'}), 400
+    subdir = MODEL_REGISTRY[model_type]['calibration_subdir']
+    status = get_calibration_status(app.config['CALIBRATION_FOLDER'], subdir)
+    return jsonify({'success': True, **status})
+
+
+@app.route('/api/calibration/prepare', methods=['POST'])
+def calibration_prepare():
+    """从用户提供的数据集路径提取校准图片、生成 dataset.txt"""
+    data = request.get_json()
+    model_type  = data.get('model_type', '')
+    dataset_path = data.get('dataset_path', '').strip()
+    max_images  = int(data.get('max_images', 50))
+
+    if model_type not in MODEL_REGISTRY:
+        return jsonify({'success': False, 'message': '未知模型类型'}), 400
+    if not dataset_path:
+        return jsonify({'success': False, 'message': '未提供数据集路径'}), 400
+
+    # 先探测格式
+    fmt, fmt_desc = detect_dataset_format(dataset_path)
+    if fmt in ('invalid', 'empty'):
+        return jsonify({'success': False, 'message': fmt_desc}), 400
+
+    subdir = MODEL_REGISTRY[model_type]['calibration_subdir']
+    output_dir = os.path.join(app.config['CALIBRATION_FOLDER'], subdir)
+
+    ok, msg, count = build_calibration_dataset(
+        dataset_path=dataset_path,
+        output_dir=output_dir,
+        model_type=model_type,
+        max_images=max_images,
+    )
+    return jsonify({
+        'success': ok,
+        'message': msg,
+        'count': count,
+        'format': fmt_desc,
+    })
+
+
+@app.route('/api/calibration/detect', methods=['POST'])
+def calibration_detect():
+    """仅探测数据集路径的格式，不做任何复制"""
+    data = request.get_json()
+    path = data.get('dataset_path', '').strip()
+    if not path:
+        return jsonify({'success': False, 'message': '路径为空'}), 400
+    fmt, desc = detect_dataset_format(path)
+    return jsonify({'success': fmt not in ('invalid', 'empty'), 'format': fmt, 'description': desc})
 
 
 @app.route('/api/preview', methods=['POST'])

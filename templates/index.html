@@ -1,568 +1,507 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PT to RKNN 模型转换工具</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 30px;
-        }
-        
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-        }
-        
-        .header p {
-            font-size: 1.1em;
-            opacity: 0.9;
-        }
-        
-        .card {
-            background: white;
-            border-radius: 12px;
-            padding: 30px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            margin-bottom: 20px;
-        }
-        
-        .form-group {
-            margin-bottom: 20px;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #333;
-        }
-        
-        .form-group input[type="file"],
-        .form-group select,
-        .form-group input[type="number"] {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: border-color 0.3s;
-        }
-        
-        .form-group input:focus,
-        .form-group select:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-        }
-        
-        .file-input-wrapper {
-            position: relative;
-            overflow: hidden;
-            display: inline-block;
-            width: 100%;
-        }
-        
-        .file-input-wrapper input[type=file] {
-            position: absolute;
-            left: -9999px;
-        }
-        
-        .file-input-label {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 40px;
-            border: 2px dashed #667eea;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.3s;
-            background: #f8f9ff;
-        }
-        
-        .file-input-label:hover {
-            background: #eef0ff;
-            border-color: #5568d3;
-        }
-        
-        .file-input-label.has-file {
-            border-style: solid;
-            background: #e8f5e9;
-            border-color: #4caf50;
-        }
-        
-        .file-info {
-            text-align: center;
-        }
-        
-        .file-icon {
-            font-size: 3em;
-            margin-bottom: 10px;
-        }
-        
-        .btn {
-            width: 100%;
-            padding: 15px;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        
-        .btn-primary:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-        }
-        
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-        
-        .progress-bar {
-            width: 100%;
-            height: 6px;
-            background: #e0e0e0;
-            border-radius: 3px;
-            overflow: hidden;
-            margin: 20px 0;
-            display: none;
-        }
-        
-        .progress-bar.active {
-            display: block;
-        }
-        
-        .progress-bar-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-            animation: progress 2s infinite;
-        }
-        
-        @keyframes progress {
-            0% { width: 0%; }
-            50% { width: 100%; }
-            100% { width: 0%; }
-        }
-        
-        .message {
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            display: none;
-        }
-        
-        .message.show {
-            display: block;
-        }
-        
-        .message.success {
-            background: #e8f5e9;
-            color: #2e7d32;
-            border-left: 4px solid #4caf50;
-        }
-        
-        .message.error {
-            background: #ffebee;
-            color: #c62828;
-            border-left: 4px solid #f44336;
-        }
-        
-        .download-link {
-            display: inline-block;
-            margin-top: 10px;
-            padding: 10px 20px;
-            background: #4caf50;
-            color: white;
-            text-decoration: none;
-            border-radius: 6px;
-            transition: background 0.3s;
-        }
-        
-        .download-link:hover {
-            background: #45a049;
-        }
-
-        .preview-btn {
-            display: inline-block;
-            margin-top: 10px;
-            margin-left: 8px;
-            padding: 10px 20px;
-            background: #667eea;
-            color: white;
-            text-decoration: none;
-            border-radius: 6px;
-            transition: background 0.3s;
-            border: none;
-            cursor: pointer;
-            font-size: 1em;
-        }
-
-        .preview-btn:hover {
-            background: #5568d3;
-        }
-
-        .preview-btn:disabled {
-            background: #aaa;
-            cursor: not-allowed;
-        }
-        
-        .output-files {
-            margin-top: 20px;
-        }
-        
-        .file-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px;
-            border: 1px solid #e0e0e0;
-            border-radius: 6px;
-            margin-bottom: 10px;
-            transition: all 0.3s;
-        }
-        
-        .file-item:hover {
-            background: #f5f5f5;
-            border-color: #667eea;
-        }
-        
-        .file-item-info {
-            flex: 1;
-        }
-        
-        .file-item-name {
-            font-weight: 500;
-            color: #333;
-            margin-bottom: 4px;
-        }
-        
-        .file-item-meta {
-            font-size: 0.85em;
-            color: #666;
-        }
-
-        .file-item-actions {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-        
-        .loading {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255,255,255,.3);
-            border-radius: 50%;
-            border-top-color: #fff;
-            animation: spin 1s ease-in-out infinite;
-        }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PT → RKNN 多模型转换工具</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px}
+.container{max-width:900px;margin:0 auto}
+.header{text-align:center;color:white;padding:28px 0 20px}
+.header h1{font-size:1.9em;margin-bottom:8px}
+.header p{opacity:.85}
+.steps{display:flex;justify-content:center;margin-bottom:20px}
+.step-item{display:flex;align-items:center;gap:7px;color:rgba(255,255,255,.55);font-size:.88em}
+.step-item.active{color:#fff;font-weight:700}
+.step-item.done{color:rgba(255,255,255,.8)}
+.step-num{width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.8em}
+.step-item.active .step-num{background:#fff;color:#667eea}
+.step-item.done .step-num{background:#4caf50;color:#fff}
+.step-sep{width:36px;height:2px;background:rgba(255,255,255,.2);margin:0 5px;align-self:center}
+.step-sep.done{background:rgba(255,255,255,.6)}
+.card{background:#fff;border-radius:14px;padding:24px;margin-bottom:18px;box-shadow:0 4px 20px rgba(0,0,0,.10)}
+.card-title{font-size:1.05em;font-weight:700;color:#333;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.step-badge{background:#667eea;color:#fff;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.78em;font-weight:700;flex-shrink:0}
+.model-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+@media(max-width:600px){.model-grid{grid-template-columns:repeat(2,1fr)}}
+.mc{border:2px solid #e8e8e8;border-radius:10px;padding:13px 11px;cursor:pointer;transition:all .2s;position:relative}
+.mc:hover{border-color:#667eea;background:#f8f9ff}
+.mc.sel{border-color:#667eea;background:linear-gradient(135deg,#f0f2ff,#f8f9ff);box-shadow:0 0 0 3px rgba(102,126,234,.13)}
+.mc .mci{font-size:1.5em;margin-bottom:5px}
+.mc .mcn{font-weight:700;font-size:.88em;color:#333;margin-bottom:2px}
+.mc .mcd{font-size:.75em;color:#999;line-height:1.3}
+.mc .mcb{font-size:.7em;padding:2px 6px;border-radius:20px;background:#eee;color:#777;margin-top:6px;display:inline-block}
+.mc.sel .mcb{background:#e0e5ff;color:#667eea}
+.mc .ck{position:absolute;top:7px;right:7px;width:18px;height:18px;border-radius:50%;background:#667eea;color:#fff;display:none;align-items:center;justify-content:center;font-size:.72em}
+.mc.sel .ck{display:flex}
+.upload-hint{background:#f0f4ff;border-left:4px solid #667eea;padding:9px 13px;border-radius:0 6px 6px 0;font-size:.85em;color:#555;margin-bottom:12px}
+.file-drop{border:2px dashed #c5cff5;border-radius:10px;padding:28px 16px;text-align:center;cursor:pointer;transition:all .2s;background:#fafbff}
+.file-drop:hover,.file-drop.dragover{border-color:#667eea;background:#f0f2ff}
+.file-drop.has-file{border-style:solid;border-color:#667eea}
+.file-drop input[type=file]{display:none}
+.drop-icon{font-size:2em;margin-bottom:8px}
+.drop-main{font-size:.93em;color:#555}
+.drop-sub{font-size:.8em;color:#aaa;margin-top:3px}
+.vst{margin-top:10px;padding:9px 13px;border-radius:8px;font-size:.86em;display:none}
+.vst.checking{background:#fff8e1;color:#856404;display:block}
+.vst.ok{background:#d4edda;color:#155724;display:block}
+.vst.err{background:#f8d7da;color:#721c24;display:block;white-space:pre-wrap}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.fg{margin-bottom:14px}
+.fg label{display:block;font-weight:600;font-size:.85em;color:#444;margin-bottom:5px}
+select,input[type=number],input[type=text]{width:100%;padding:9px 11px;border:2px solid #e0e0e0;border-radius:8px;font-size:.92em;outline:none;transition:border-color .2s;background:#fff}
+select:focus,input:focus{border-color:#667eea}
+/* calibration panel */
+.calib-panel{border:2px solid #e8e8e8;border-radius:10px;padding:16px;margin-bottom:16px;transition:all .3s}
+.calib-panel.ready{border-color:#28a745;background:#f0fff4}
+.calib-panel.missing{border-color:#ff9800;background:#fffbf0}
+.calib-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;cursor:pointer}
+.calib-badge{font-size:.78em;padding:3px 10px;border-radius:20px;font-weight:600}
+.calib-badge.ready{background:#d4edda;color:#155724}
+.calib-badge.missing{background:#fff3cd;color:#856404}
+.calib-body{font-size:.88em;color:#555}
+.calib-input-row{display:flex;gap:8px;margin-top:10px;align-items:flex-start}
+.calib-input-row input{flex:1}
+.calib-detect-btn{padding:9px 16px;border:none;border-radius:8px;background:#667eea;color:#fff;cursor:pointer;font-size:.88em;white-space:nowrap;transition:opacity .2s}
+.calib-detect-btn:hover{opacity:.87}
+.calib-detect-btn:disabled{background:#bbb;cursor:not-allowed}
+.calib-confirm-btn{padding:9px 16px;border:none;border-radius:8px;background:#28a745;color:#fff;cursor:pointer;font-size:.88em;white-space:nowrap;transition:opacity .2s}
+.calib-confirm-btn:hover{opacity:.87}
+.calib-confirm-btn:disabled{background:#bbb;cursor:not-allowed}
+.calib-status{margin-top:10px;padding:8px 12px;border-radius:6px;font-size:.84em;display:none}
+.calib-status.show{display:block}
+.calib-status.ok{background:#d4edda;color:#155724}
+.calib-status.err{background:#f8d7da;color:#721c24}
+.calib-status.info{background:#e3f2fd;color:#0d47a1}
+.calib-help{font-size:.8em;color:#aaa;margin-top:6px;line-height:1.4}
+.btn{width:100%;padding:13px;border:none;border-radius:10px;font-size:1em;font-weight:700;cursor:pointer;transition:all .2s}
+.btn-primary{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff}
+.btn-primary:hover{opacity:.9;transform:translateY(-1px)}
+.btn-primary:disabled{background:#bbb;cursor:not-allowed;transform:none}
+.prog{height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden;margin-bottom:14px;display:none}
+.prog.active{display:block}
+.prog-bar{height:100%;width:0%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:3px;animation:panim 2.5s ease-in-out infinite}
+@keyframes panim{0%{width:5%}50%{width:75%}100%{width:92%}}
+.rmsg{padding:14px 16px;border-radius:10px;font-size:.9em;line-height:1.6;display:none;margin-bottom:14px}
+.rmsg.show{display:block}
+.rmsg.success{background:#d4edda;color:#155724;border-left:4px solid #28a745}
+.rmsg.error{background:#f8d7da;color:#721c24;border-left:4px solid #dc3545}
+.abtn{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px;display:none}
+.abtn.show{display:flex}
+.dlb{padding:8px 18px;border-radius:8px;font-size:.87em;font-weight:600;text-decoration:none;border:none;cursor:pointer;transition:opacity .2s}
+.dlb:hover{opacity:.85}
+.dlb.green{background:#28a745;color:#fff}
+.dlb.purple{background:#667eea;color:#fff}
+.dlb:disabled{background:#bbb;cursor:not-allowed}
+.hist-item{display:flex;justify-content:space-between;align-items:center;padding:11px 13px;border:1px solid #eee;border-radius:8px;margin-bottom:7px;transition:all .2s}
+.hist-item:hover{background:#f8f9ff;border-color:#c5cff5}
+.hist-name{font-weight:600;font-size:.88em;color:#333;margin-bottom:2px}
+.hist-meta{font-size:.76em;color:#aaa}
+.hist-acts{display:flex;gap:7px;flex-shrink:0}
+.sp{display:inline-block;width:16px;height:16px;border:2.5px solid rgba(255,255,255,.35);border-radius:50%;border-top-color:#fff;animation:spin .8s linear infinite;vertical-align:middle;margin-right:5px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🚀 PT to RKNN 转换工具</h1>
-            <p>简单快速地将PyTorch模型转换为RKNN格式</p>
-        </div>
-        
-        <div class="card">
-            <div id="message" class="message"></div>
-            
-            <form id="convertForm">
-                <div class="form-group">
-                    <label>1. 选择PT模型文件</label>
-                    <div style="background: #d4edda; border-left: 4px solid #28a745; padding: 10px; margin-bottom: 10px; border-radius: 4px; font-size: 0.9em;">
-                        <strong>✅ 支持格式：</strong> 支持 <strong>普通PT模型</strong> 和 <strong>TorchScript</strong> 格式！<br>
-                        普通PT模型会自动转换为TorchScript，再转换为RKNN
-                    </div>
-                    <div class="file-input-wrapper">
-                        <input type="file" id="modelFile" name="model_file" accept=".pt,.pth,.torchscript" required>
-                        <label for="modelFile" class="file-input-label" id="fileLabel">
-                            <div class="file-info">
-                                <div class="file-icon">📁</div>
-                                <div>点击选择或拖拽PT/PTH文件</div>
-                                <div style="font-size: 0.9em; color: #666; margin-top: 5px;">支持普通PT和TorchScript格式</div>
-                            </div>
-                        </label>
-                    </div>
-                </div>
-                
-                <div class="form-group">
-                    <label for="platform">2. 选择目标平台</label>
-                    <select id="platform" name="platform" required>
-                        <option value="rk3562">RK3562</option>
-                        <option value="rk3566">RK3566</option>
-                        <option value="rk3568">RK3568</option>
-                        <option value="rk3576" selected>RK3576</option>
-                        <option value="rk3588">RK3588</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="quantType">3. 选择量化类型</label>
-                    <select id="quantType" name="quant_type" required>
-                        <option value="i8" selected>INT8 (量化，推荐)</option>
-                        <option value="fp">FP16 (不量化)</option>
-                    </select>
-                </div>
-                
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="inputWidth">输入宽度</label>
-                        <input type="number" id="inputWidth" name="input_width" value="640" min="32" max="1920" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="inputHeight">输入高度</label>
-                        <input type="number" id="inputHeight" name="input_height" value="640" min="32" max="1920" required>
-                    </div>
-                </div>
-                
-                <div class="progress-bar" id="progressBar">
-                    <div class="progress-bar-fill"></div>
-                </div>
-                
-                <button type="submit" class="btn btn-primary" id="convertBtn">
-                    开始转换
-                </button>
-            </form>
-        </div>
-        
-        <div class="card">
-            <h3 style="margin-bottom: 15px;">📦 转换历史</h3>
-            <div id="outputFiles" class="output-files">
-                <p style="color: #666; text-align: center;">暂无转换记录</p>
-            </div>
-        </div>
-        
-        <div class="card" id="usage-note">
-            <h3 style="margin-bottom: 15px; color: #667eea;">📝 使用说明</h3>
-            
-            <div style="background: #d4edda; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #28a745;">
-                <h4 style="margin-bottom: 10px; color: #333;">✨ 自动转换功能</h4>
-                <p style="color: #333; margin-bottom: 8px;">本工具已支持 <strong>普通PT模型自动转换</strong>！</p>
-                <ul style="color: #666; font-size: 0.95em; line-height: 1.6; margin-left: 20px;">
-                    <li>支持上传普通的 .pt / .pth 模型文件</li>
-                    <li>自动检测模型格式（普通PT 或 TorchScript）</li>
-                    <li>普通PT模型会自动转换为TorchScript，然后转换为RKNN</li>
-                    <li>TorchScript模型直接转换为RKNN</li>
-                </ul>
-            </div>
-            
-            <div style="background: #f8f9ff; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
-                <h4 style="margin-bottom: 10px; color: #333;">🎯 转换流程</h4>
-                <div style="color: #666; line-height: 1.8;">
-                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                        <span style="background: #667eea; color: white; padding: 4px 12px; border-radius: 4px; margin-right: 10px; font-size: 0.85em;">步骤1</span>
-                        <span>上传PT模型文件</span>
-                    </div>
-                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                        <span style="background: #667eea; color: white; padding: 4px 12px; border-radius: 4px; margin-right: 10px; font-size: 0.85em;">步骤2</span>
-                        <span>选择目标平台和量化类型</span>
-                    </div>
-                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                        <span style="background: #667eea; color: white; padding: 4px 12px; border-radius: 4px; margin-right: 10px; font-size: 0.85em;">步骤3</span>
-                        <span>点击转换（自动处理PT→TorchScript→RKNN）</span>
-                    </div>
-                    <div style="display: flex; align-items: center;">
-                        <span style="background: #28a745; color: white; padding: 4px 12px; border-radius: 4px; margin-right: 10px; font-size: 0.85em;">完成</span>
-                        <span>下载生成的RKNN模型</span>
-                    </div>
-                </div>
-            </div>
-            
-            <div style="margin-top: 15px; padding: 12px; background: #e3f2fd; border-left: 4px solid #2196f3; border-radius: 4px;">
-                <strong>💡 提示：</strong> 如需手动转换PT为TorchScript，可使用仓库中的 pt2torchscript.py 脚本
-            </div>
-        </div>
+<div class="container">
+<div class="header">
+  <h1>🚀 PT → RKNN 多模型转换工具</h1>
+  <p>支持 YOLOv8-Det / Seg / Pose / OBB &nbsp;·&nbsp; ResNet &nbsp;·&nbsp; RetinaFace</p>
+</div>
+<div class="steps">
+  <div class="step-item active" id="st1"><div class="step-num">1</div><span>选择类型</span></div>
+  <div class="step-sep" id="sep1"></div>
+  <div class="step-item" id="st2"><div class="step-num">2</div><span>上传模型</span></div>
+  <div class="step-sep" id="sep2"></div>
+  <div class="step-item" id="st3"><div class="step-num">3</div><span>配置 &amp; 转换</span></div>
+</div>
+
+<!-- Step 1 -->
+<div class="card" id="cardStep1">
+  <div class="card-title"><div class="step-badge">1</div>选择网络类型</div>
+  <div class="model-grid" id="modelGrid"></div>
+</div>
+
+<!-- Step 2 -->
+<div class="card" id="cardStep2" style="opacity:.45;pointer-events:none">
+  <div class="card-title"><div class="step-badge">2</div>上传模型文件</div>
+  <div class="upload-hint" id="uploadHint">请先在上方选择网络类型</div>
+  <div class="file-drop" id="fileDrop">
+    <input type="file" id="fileInput" accept=".pt,.pth,.onnx">
+    <div class="drop-icon" id="dropIcon">📁</div>
+    <div class="drop-main" id="dropMain">点击选择或拖拽模型文件</div>
+    <div class="drop-sub" id="dropSub">支持 .pt / .pth / .onnx</div>
+  </div>
+  <div class="vst" id="vst"></div>
+</div>
+
+<!-- Step 3 -->
+<div class="card" id="cardStep3" style="opacity:.45;pointer-events:none">
+  <div class="card-title"><div class="step-badge">3</div>配置参数 &amp; 开始转换</div>
+
+  <div class="form-row">
+    <div class="fg">
+      <label>目标平台</label>
+      <select id="platform">
+        <option value="rk3562">RK3562</option>
+        <option value="rk3566">RK3566</option>
+        <option value="rk3568">RK3568</option>
+        <option value="rk3576" selected>RK3576</option>
+        <option value="rk3588">RK3588</option>
+      </select>
     </div>
+    <div class="fg">
+      <label>量化类型</label>
+      <select id="quantType" onchange="onQuantChange()">
+        <option value="i8" selected>INT8（量化，推荐）</option>
+        <option value="fp">FP16（不量化）</option>
+      </select>
+    </div>
+  </div>
 
-    <script>
-        const form = document.getElementById('convertForm');
-        const fileInput = document.getElementById('modelFile');
-        const fileLabel = document.getElementById('fileLabel');
-        const convertBtn = document.getElementById('convertBtn');
-        const progressBar = document.getElementById('progressBar');
-        const messageDiv = document.getElementById('message');
-        const outputFilesDiv = document.getElementById('outputFiles');
-        
-        // 文件选择处理
-        fileInput.addEventListener('change', function(e) {
-            if (this.files.length > 0) {
-                const file = this.files[0];
-                fileLabel.classList.add('has-file');
-                fileLabel.innerHTML = `
-                    <div class="file-info">
-                        <div class="file-icon">✓</div>
-                        <div><strong>${file.name}</strong></div>
-                        <div style="font-size: 0.9em; color: #666; margin-top: 5px;">
-                            ${(file.size / 1024 / 1024).toFixed(2)} MB
-                        </div>
-                    </div>
-                `;
-            }
-        });
-        
-        // 拖拽上传
-        fileLabel.addEventListener('dragover', function(e) {
-            e.preventDefault();
-            this.style.borderColor = '#5568d3';
-        });
-        
-        fileLabel.addEventListener('dragleave', function(e) {
-            e.preventDefault();
-            if (!fileInput.files.length) {
-                this.style.borderColor = '#667eea';
-            }
-        });
-        
-        fileLabel.addEventListener('drop', function(e) {
-            e.preventDefault();
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                fileInput.files = files;
-                fileInput.dispatchEvent(new Event('change'));
-            }
-        });
-        
-        // 表单提交
-        form.addEventListener('submit', async function(e) {
-            e.preventDefault();
-            
-            const formData = new FormData(form);
-            
-            showMessage('', '', false);
-            convertBtn.disabled = true;
-            convertBtn.innerHTML = '<span class="loading"></span> 转换中...';
-            progressBar.classList.add('active');
-            
-            try {
-                const response = await fetch('/api/convert', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    showMessage(
-                        `✓ ${result.message}<br>
-                        <a href="${result.download_url}" class="download-link">⬇️ 下载 RKNN 模型</a>
-                        <button class="preview-btn" onclick="previewModel('${result.output_file}')">&#128065; Netron 预览结构</button>`,
-                        'success',
-                        true
-                    );
-                    loadOutputFiles();
-                } else {
-                    showMessage(`✗ ${result.message}`, 'error', true);
-                }
-                
-            } catch (error) {
-                showMessage(`✗ 转换失败: ${error.message}`, 'error', true);
-            } finally {
-                convertBtn.disabled = false;
-                convertBtn.innerHTML = '开始转换';
-                progressBar.classList.remove('active');
-            }
-        });
-        
-        // 预览模型结构
-        async function previewModel(filename) {
-            const btn = event.target;
-            const origText = btn.innerHTML;
-            btn.disabled = true;
-            btn.innerHTML = '正在启动...';
-            try {
-                const response = await fetch('/api/preview', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({filename})
-                });
-                const result = await response.json();
-                if (result.success) {
-                    window.open(result.url, '_blank');
-                } else {
-                    alert('预览启动失败: ' + result.message);
-                }
-            } catch (error) {
-                alert('预览启动失败: ' + error.message);
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = origText;
-            }
-        }
+  <div class="form-row">
+    <div class="fg"><label>输入宽度 (W)</label><input type="number" id="inputWidth" value="640" min="32" max="4096"></div>
+    <div class="fg"><label>输入高度 (H)</label><input type="number" id="inputHeight" value="640" min="32" max="4096"></div>
+  </div>
 
-        // 显示消息
-        function showMessage(text, type, show) {
-            messageDiv.innerHTML = text;
-            messageDiv.className = `message ${type} ${show ? 'show' : ''}`;
-        }
-        
-        // 加载输出文件列表
-        async function loadOutputFiles() {
-            try {
-                const response = await fetch('/api/outputs');
-                const result = await response.json();
-                
-                if (result.success && result.files.length > 0) {
-                    outputFilesDiv.innerHTML = result.files.map(file => `
-                        <div class="file-item">
-                            <div class="file-item-info">
-                                <div class="file-item-name">${file.filename}</div>
-                                <div class="file-item-meta">${file.size} • ${file.time}</div>
-                            </div>
-                            <div class="file-item-actions">
-                                <button class="preview-btn" style="margin: 0;" onclick="previewModel('${file.filename}')">👁️ 预览</button>
-                                <a href="${file.download_url}" class="download-link" style="margin: 0;">⬇️ 下载</a>
-                            </div>
-                        </div>
-                    `).join('');
-                } else {
-                    outputFilesDiv.innerHTML = '<p style="color: #666; text-align: center;">暂无转换记录</p>';
-                }
-            } catch (error) {
-                console.error('加载文件列表失败:', error);
-            }
-        }
-        
-        // 页面加载时获取文件列表
-        loadOutputFiles();
-    </script>
+  <!-- 校准数据集面板 -->
+  <div class="calib-panel missing" id="calibPanel">
+    <div class="calib-header" onclick="toggleCalibBody()">
+      <div style="display:flex;align-items:center;gap:9px">
+        <strong style="font-size:.95em">📊 INT8 校准数据集</strong>
+        <span class="calib-badge missing" id="calibBadge">⚠ 未配置</span>
+      </div>
+      <span style="color:#aaa;font-size:.85em" id="calibToggleTip">▼ 展开配置</span>
+    </div>
+    <div id="calibBody" class="calib-body">
+      <div id="calibReadyInfo" style="display:none;margin-bottom:10px;padding:8px 12px;background:#d4edda;border-radius:6px;color:#155724;font-size:.86em"></div>
+      <p style="margin-bottom:10px;color:#666">
+        INT8 量化需要一批代表性图片用于校准。请提供训练数据集的目录路径（服务器本地路径），工具将自动识别格式并提取图片。
+      </p>
+      <p style="font-size:.82em;color:#888;margin-bottom:10px">
+        支持格式：<strong>普通图片目录</strong>、<strong>YOLO（含 images/ 子目录）</strong>、<strong>ImageNet（类别子目录）</strong>、<strong>COCO（val/train 子目录）</strong>
+      </p>
+      <div class="calib-input-row" id="calibInputRow">
+        <input type="text" id="calibPath" placeholder="例：/mnt/e/datasets/coco/val2017 或 /home/user/my_dataset">
+        <button class="calib-detect-btn" id="calibDetectBtn" onclick="detectDataset()">🔍 探测格式</button>
+      </div>
+      <div class="calib-status" id="calibDetectStatus"></div>
+      <div id="calibConfirmRow" style="display:none;margin-top:10px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:.85em;font-weight:600;color:#444">提取数量上限</label>
+          <input type="number" id="calibMaxImages" value="50" min="10" max="500" style="width:90px">
+          <button class="calib-confirm-btn" id="calibConfirmBtn" onclick="prepareCalibration()">✅ 确认提取并生成校准集</button>
+        </div>
+      </div>
+      <div class="calib-status" id="calibPrepStatus"></div>
+      <p class="calib-help">💡 也可跳过（选择 FP16 模式），或手动将图片放入 <code>calibration_data/&lt;类型&gt;/images/</code> 目录。</p>
+    </div>
+  </div>
+
+  <div class="rmsg" id="rmsg"></div>
+  <div class="abtn" id="abtn"></div>
+  <div class="prog" id="prog"><div class="prog-bar"></div></div>
+  <button class="btn btn-primary" id="convertBtn" disabled>选择文件后可开始转换</button>
+</div>
+
+<!-- 历史 -->
+<div class="card">
+  <div class="card-title" style="margin-bottom:10px">📦 转换历史</div>
+  <div id="historyList"><p style="text-align:center;color:#aaa;padding:16px 0">暂无转换记录</p></div>
+</div>
+</div>
+
+<script>
+// ═══════════════════════════════════════
+// State
+// ═══════════════════════════════════════
+let modelTypes = [];
+let sel = null;       // selected model type key
+let selMeta = null;   // full meta object
+let uploadedFile = null;
+let validateOk = false;
+let calibReady = false;
+
+// ═══════════════════════════════════════
+// Init
+// ═══════════════════════════════════════
+async function init() {
+  const res = await fetch('/api/model_types');
+  const d = await res.json();
+  modelTypes = d.model_types;
+  renderGrid();
+  loadHistory();
+}
+
+// ═══════════════════════════════════════
+// Step 1 — model type grid
+// ═══════════════════════════════════════
+function renderGrid() {
+  document.getElementById('modelGrid').innerHTML = modelTypes.map(t => `
+    <div class="mc" data-k="${t.value}" onclick="pickType('${t.value}')">
+      <div class="ck">✓</div>
+      <div class="mci">${t.icon}</div>
+      <div class="mcn">${t.short}</div>
+      <div class="mcd">${t.description}</div>
+      <div class="mcb">${t.accepted_exts.map(e=>'.'+e).join(' / ')}</div>
+    </div>`).join('');
+}
+
+function pickType(key) {
+  sel = key;
+  selMeta = modelTypes.find(m => m.value === key);
+  document.querySelectorAll('.mc').forEach(c => c.classList.toggle('sel', c.dataset.k === key));
+  stepMark(1,'done'); stepMark(2,'active');
+  const s2 = document.getElementById('cardStep2');
+  s2.style.opacity='1'; s2.style.pointerEvents='';
+  document.getElementById('uploadHint').innerHTML = `<strong>${selMeta.icon} ${selMeta.short}</strong>：${selMeta.hint}`;
+  document.getElementById('fileInput').accept = selMeta.accepted_exts.map(e=>'.'+e).join(',');
+  document.getElementById('inputWidth').value  = selMeta.input_size_default[0];
+  document.getElementById('inputHeight').value = selMeta.input_size_default[1];
+  resetUpload();
+  checkCalibStatus();
+}
+
+// ═══════════════════════════════════════
+// Step 2 — file upload + validate
+// ═══════════════════════════════════════
+const fileDrop = document.getElementById('fileDrop');
+const fileInput = document.getElementById('fileInput');
+fileDrop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => { if(fileInput.files.length) handleFile(fileInput.files[0]); });
+fileDrop.addEventListener('dragover', e => { e.preventDefault(); fileDrop.classList.add('dragover'); });
+fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('dragover'));
+fileDrop.addEventListener('drop', e => {
+  e.preventDefault(); fileDrop.classList.remove('dragover');
+  if(e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+
+async function handleFile(file) {
+  uploadedFile = file; validateOk = false;
+  fileDrop.classList.add('has-file');
+  document.getElementById('dropIcon').textContent = '📄';
+  document.getElementById('dropMain').innerHTML = `<strong>${file.name}</strong>`;
+  document.getElementById('dropSub').textContent = (file.size/1024/1024).toFixed(2)+' MB';
+  showVst('checking','⏳ 正在校验文件...');
+  setBtn(false,'校验中...');
+  const form = new FormData();
+  form.append('model_file', file);
+  form.append('model_type', sel);
+  try {
+    const res = await fetch('/api/validate',{method:'POST',body:form});
+    const d = await res.json();
+    if(d.valid) { validateOk=true; showVst('ok',d.message); activateStep3(); }
+    else { validateOk=false; showVst('err',d.message); setBtn(false,'文件不匹配，重新选择'); }
+  } catch(e) { showVst('err','校验失败：'+e.message); setBtn(false,'校验失败'); }
+}
+
+function showVst(cls,msg){ const e=document.getElementById('vst'); e.className='vst '+cls; e.textContent=msg; }
+
+function activateStep3() {
+  const s3=document.getElementById('cardStep3');
+  s3.style.opacity='1'; s3.style.pointerEvents='';
+  setBtn(true,'🚀 开始转换');
+  stepMark(2,'done'); stepMark(3,'active');
+}
+
+function resetUpload() {
+  uploadedFile=null; validateOk=false;
+  fileDrop.classList.remove('has-file');
+  fileInput.value='';
+  document.getElementById('dropIcon').textContent='📁';
+  document.getElementById('dropMain').textContent='点击选择或拖拽模型文件';
+  document.getElementById('dropSub').textContent='支持 .pt / .pth / .onnx';
+  document.getElementById('vst').className='vst';
+  const s3=document.getElementById('cardStep3');
+  s3.style.opacity='.45'; s3.style.pointerEvents='none';
+  setBtn(false,'选择文件后可开始转换');
+  hideRmsg();
+  document.getElementById('abtn').className='abtn';
+  stepMark(3,'');
+}
+
+// ═══════════════════════════════════════
+// Calibration panel
+// ═══════════════════════════════════════
+let calibBodyOpen = true;
+
+function toggleCalibBody() {
+  calibBodyOpen = !calibBodyOpen;
+  document.getElementById('calibBody').style.display = calibBodyOpen ? '' : 'none';
+  document.getElementById('calibToggleTip').textContent = calibBodyOpen ? '▲ 收起' : '▼ 展开配置';
+}
+
+async function checkCalibStatus() {
+  if(!sel) return;
+  const panel = document.getElementById('calibPanel');
+  const badge = document.getElementById('calibBadge');
+  const readyInfo = document.getElementById('calibReadyInfo');
+  try {
+    const res = await fetch('/api/calibration/status?model_type='+sel);
+    const d = await res.json();
+    calibReady = d.ready;
+    if(d.ready) {
+      panel.className = 'calib-panel ready';
+      badge.className = 'calib-badge ready';
+      badge.textContent = '✅ 已就绪（'+d.count+' 张）';
+      readyInfo.style.display='block';
+      readyInfo.textContent = '✅ 已有 '+d.count+' 张校准图片。可直接转换，或重新指定数据集覆盖。';
+    } else {
+      panel.className = 'calib-panel missing';
+      badge.className = 'calib-badge missing';
+      badge.textContent = '⚠ 未配置';
+      readyInfo.style.display='none';
+    }
+  } catch(e){}
+}
+
+async function detectDataset() {
+  const path = document.getElementById('calibPath').value.trim();
+  if(!path) { alert('请输入数据集路径'); return; }
+  const btn = document.getElementById('calibDetectBtn');
+  btn.disabled=true; btn.textContent='探测中...';
+  const st = document.getElementById('calibDetectStatus');
+  st.className='calib-status show info'; st.textContent='⏳ 正在探测路径格式...';
+  document.getElementById('calibConfirmRow').style.display='none';
+  try {
+    const res = await fetch('/api/calibration/detect',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({dataset_path: path})
+    });
+    const d = await res.json();
+    if(d.success) {
+      st.className='calib-status show ok';
+      st.textContent = '🔍 探测结果：'+d.description;
+      document.getElementById('calibConfirmRow').style.display='block';
+    } else {
+      st.className='calib-status show err';
+      st.textContent = '❌ '+d.description;
+    }
+  } catch(e) {
+    st.className='calib-status show err'; st.textContent='探测失败：'+e.message;
+  } finally { btn.disabled=false; btn.textContent='🔍 探测格式'; }
+}
+
+async function prepareCalibration() {
+  const path = document.getElementById('calibPath').value.trim();
+  const maxN = parseInt(document.getElementById('calibMaxImages').value)||50;
+  const btn = document.getElementById('calibConfirmBtn');
+  btn.disabled=true; btn.textContent='提取中...';
+  const st = document.getElementById('calibPrepStatus');
+  st.className='calib-status show info'; st.textContent='⏳ 正在提取图片并生成校准集，请稍候...';
+  try {
+    const res = await fetch('/api/calibration/prepare',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({model_type:sel, dataset_path:path, max_images:maxN})
+    });
+    const d = await res.json();
+    if(d.success) {
+      st.className='calib-status show ok'; st.textContent=d.message;
+      await checkCalibStatus();
+    } else {
+      st.className='calib-status show err'; st.textContent='❌ '+d.message;
+    }
+  } catch(e) {
+    st.className='calib-status show err'; st.textContent='提取失败：'+e.message;
+  } finally { btn.disabled=false; btn.textContent='✅ 确认提取并生成校准集'; }
+}
+
+function onQuantChange() {
+  const isInt8 = document.getElementById('quantType').value === 'i8';
+  document.getElementById('calibPanel').style.display = isInt8 ? '' : 'none';
+}
+
+// ═══════════════════════════════════════
+// Step 3 — convert
+// ═══════════════════════════════════════
+document.getElementById('convertBtn').addEventListener('click', doConvert);
+
+async function doConvert() {
+  if(!validateOk||!uploadedFile) return;
+  hideRmsg();
+  document.getElementById('abtn').className='abtn';
+  setBtn(false,'<span class="sp"></span>转换中，请稍候...');
+  document.getElementById('prog').classList.add('active');
+  const form = new FormData();
+  form.append('model_file', uploadedFile);
+  form.append('model_type',   sel);
+  form.append('platform',     document.getElementById('platform').value);
+  form.append('quant_type',   document.getElementById('quantType').value);
+  form.append('input_width',  document.getElementById('inputWidth').value);
+  form.append('input_height', document.getElementById('inputHeight').value);
+  try {
+    const res = await fetch('/api/convert',{method:'POST',body:form});
+    const d = await res.json();
+    document.getElementById('prog').classList.remove('active');
+    if(d.success) {
+      showRmsg('success','✅ 转换成功！<br><pre style="font-size:.82em;margin-top:5px;white-space:pre-wrap">'+d.message+'</pre>');
+      const ab=document.getElementById('abtn');
+      ab.className='abtn show';
+      ab.innerHTML=`<a href="${d.download_url}" class="dlb green">⬇️ 下载 RKNN</a>
+        <button class="dlb purple" onclick="previewModel('${d.output_file}')">👁 Netron 预览</button>`;
+      loadHistory();
+    } else {
+      showRmsg('error','❌ 转换失败：<br><pre style="font-size:.82em;margin-top:5px;white-space:pre-wrap">'+d.message+'</pre>');
+    }
+  } catch(e) {
+    document.getElementById('prog').classList.remove('active');
+    showRmsg('error','❌ 请求失败：'+e.message);
+  }
+  setBtn(true,'🚀 重新转换');
+}
+
+// ═══════════════════════════════════════
+// Netron preview
+// ═══════════════════════════════════════
+async function previewModel(filename) {
+  const btn=event.target; const orig=btn.innerHTML;
+  btn.disabled=true; btn.innerHTML='启动中...';
+  try {
+    const res=await fetch('/api/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename})});
+    const d=await res.json();
+    if(d.success) window.open(d.url,'_blank');
+    else alert('Netron 启动失败：'+d.message);
+  } catch(e) { alert('Netron 启动失败：'+e.message); }
+  finally { btn.disabled=false; btn.innerHTML=orig; }
+}
+
+// ═══════════════════════════════════════
+// History
+// ═══════════════════════════════════════
+async function loadHistory() {
+  try {
+    const res=await fetch('/api/outputs');
+    const d=await res.json();
+    const list=document.getElementById('historyList');
+    if(d.success&&d.files.length>0) {
+      list.innerHTML=d.files.map(f=>`
+        <div class="hist-item">
+          <div><div class="hist-name">${f.filename}</div><div class="hist-meta">${f.size} · ${f.time}</div></div>
+          <div class="hist-acts">
+            <button class="dlb purple" style="font-size:.8em;padding:6px 13px" onclick="previewModel('${f.filename}')">👁 预览</button>
+            <a href="${f.download_url}" class="dlb green" style="font-size:.8em;padding:6px 13px">⬇️ 下载</a>
+          </div>
+        </div>`).join('');
+    } else {
+      list.innerHTML='<p style="text-align:center;color:#aaa;padding:16px 0">暂无转换记录</p>';
+    }
+  } catch(e){}
+}
+
+// ═══════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════
+function setBtn(en,html){ const b=document.getElementById('convertBtn'); b.disabled=!en; b.innerHTML=html; }
+function showRmsg(cls,html){ const e=document.getElementById('rmsg'); e.className='rmsg show '+cls; e.innerHTML=html; }
+function hideRmsg(){ document.getElementById('rmsg').className='rmsg'; }
+function stepMark(n,state){
+  document.getElementById('st'+n).className='step-item '+state;
+  const sep=document.getElementById('sep'+(n-1));
+  if(sep) sep.className='step-sep '+(state?'done':'');
+}
+init();
+setInterval(loadHistory,30000);
+</script>
 </body>
 </html>

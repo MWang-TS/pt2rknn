@@ -3,3 +3,5 @@ Werkzeug==3.0.1
 rknn-toolkit2
 numpy>=1.23.0
 netron
+onnx>=1.14.0
+ultralytics
