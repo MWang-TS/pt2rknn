@@ -4,9 +4,15 @@ PT to RKNN 转换工具 - Flask Web服务
 import os
 import time
 import json
+import socket
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from converter import PT2RKNNConverter
+try:
+    import netron
+    NETRON_AVAILABLE = True
+except ImportError:
+    NETRON_AVAILABLE = False
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
@@ -118,6 +124,32 @@ def convert_model():
             
     except Exception as e:
         return jsonify({'success': False, 'message': f'转换失败: {str(e)}'}), 500
+
+
+def get_free_port():
+    """获取一个空闲端口"""
+    with socket.socket() as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
+
+@app.route('/api/preview', methods=['POST'])
+def preview_model():
+    """启动 Netron 可视化服务预览模型结构"""
+    if not NETRON_AVAILABLE:
+        return jsonify({'success': False, 'message': '未安装 netron，请运行: pip install netron'}), 503
+    try:
+        data = request.get_json()
+        filename = secure_filename(data.get('filename', ''))
+        file_path = os.path.join(app.config['OUTPUT_FOLDER'], filename)
+        if not os.path.exists(file_path):
+            return jsonify({'success': False, 'message': '文件不存在'}), 404
+
+        port = get_free_port()
+        host, port = netron.start(file_path, address=('0.0.0.0', port), browse=False)
+        return jsonify({'success': True, 'url': f'http://localhost:{port}'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'预览启动失败: {str(e)}'}), 500
 
 
 @app.route('/api/download/<filename>', methods=['GET'])
