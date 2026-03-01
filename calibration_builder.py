@@ -16,6 +16,38 @@ import logging
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.JPEG', '.JPG', '.PNG')
+
+
+# ─────────────────────────────────────────────────────────────
+# 路径规范化：自动将 Windows 路径转换为 WSL 路径
+# ─────────────────────────────────────────────────────────────
+
+def _normalize_path(path):
+    """
+    将用户输入的路径统一转换为 WSL/Linux 路径。
+    支持以下格式：
+      E:\\datasets\\coco   →  /mnt/e/datasets/coco
+      E:/datasets/coco     →  /mnt/e/datasets/coco
+      /mnt/e/datasets/coco →  /mnt/e/datasets/coco  (不变)
+    """
+    if not path:
+        return path
+    path = path.strip().strip('"').strip("'")   # 去掉引号（用户可能从资源管理器复制）
+    # 判断是否为 Windows 盘符路径，如 C:\ 或 D:/
+    if len(path) >= 2 and path[1] == ':':
+        drive = path[0].lower()                 # 盘符小写
+        rest = path[2:].replace('\\', '/')      # 剩余路径，反斜杠转正斜杠
+        rest = rest.lstrip('/')                 # 去掉开头多余的斜杠
+        path = '/mnt/{}/{}'.format(drive, rest)
+        logger.info('Windows 路径已转换为 WSL 路径: %s', path)
+    else:
+        # 已是 Linux/WSL 路径，仅将反斜杠统一替换（以防万一）
+        path = path.replace('\\', '/')
+    return path
+
+# 公开别名，供外部直接调用
+normalize_path = _normalize_path
+
 DEFAULT_MAX_IMAGES = 50   # 每次最多取多少张图用于校准
 
 
@@ -39,7 +71,9 @@ def _collect_images_recursive(root, max_n=None):
 def detect_dataset_format(dataset_path):
     """
     自动检测数据集格式，返回 (format_name, description)
+    支持 Windows 路径（如 E:\\datasets\\coco）自动转换为 WSL 路径
     """
+    dataset_path = _normalize_path(dataset_path)
     if not os.path.isdir(dataset_path):
         return 'invalid', '路径不存在或不是目录'
 
@@ -100,11 +134,13 @@ def build_calibration_dataset(
     max_images=DEFAULT_MAX_IMAGES,
 ):
     """
+    支持 Windows 路径（如 E:\\datasets\\coco）自动转换为 WSL 路径
     从 dataset_path 提取 max_images 张图片，
     复制到 output_dir/images/，生成 output_dir/dataset.txt。
 
     返回 (success, message, count)
     """
+    dataset_path = _normalize_path(dataset_path)
     if not os.path.isdir(dataset_path):
         return False, f'路径不存在：{dataset_path}', 0
 

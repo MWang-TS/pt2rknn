@@ -372,7 +372,11 @@ async function detectDataset() {
     const d = await res.json();
     if(d.success) {
       st.className='calib-status show ok';
-      st.textContent = '🔍 探测结果：'+d.description;
+      let msg = '🔍 探测结果：' + d.description;
+      if(d.resolved_path) {
+        msg += '<br><small style="color:#555">↳ Windows 路径已转换为 WSL：<code>' + d.resolved_path + '</code></small>';
+      }
+      st.innerHTML = msg;
       document.getElementById('calibConfirmRow').style.display='block';
     } else {
       st.className='calib-status show err';

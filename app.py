@@ -10,7 +10,7 @@ from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from converter import UniversalConverter
 from model_registry import MODEL_REGISTRY, get_model_types_meta, validate_file_ext, validate_pt_task
-from calibration_builder import build_calibration_dataset, get_calibration_status, detect_dataset_format
+from calibration_builder import build_calibration_dataset, get_calibration_status, detect_dataset_format, normalize_path
 try:
     import netron
     NETRON_AVAILABLE = True
@@ -197,7 +197,8 @@ def calibration_prepare():
     if not dataset_path:
         return jsonify({'success': False, 'message': '未提供数据集路径'}), 400
 
-    # 先探测格式
+    # 先规范化路径（支持 Windows 路径），再探测格式
+    dataset_path = normalize_path(dataset_path)
     fmt, fmt_desc = detect_dataset_format(dataset_path)
     if fmt in ('invalid', 'empty'):
         return jsonify({'success': False, 'message': fmt_desc}), 400
@@ -226,8 +227,13 @@ def calibration_detect():
     path = data.get('dataset_path', '').strip()
     if not path:
         return jsonify({'success': False, 'message': '路径为空'}), 400
-    fmt, desc = detect_dataset_format(path)
-    return jsonify({'success': fmt not in ('invalid', 'empty'), 'format': fmt, 'description': desc})
+    resolved = normalize_path(path)
+    fmt, desc = detect_dataset_format(resolved)
+    resp = {'success': fmt not in ('invalid', 'empty'), 'format': fmt, 'description': desc}
+    if resolved != path:
+        resp['resolved_path'] = resolved
+        resp['description'] = desc + f'（路径已转换为 WSL：{resolved}）'
+    return jsonify(resp)
 
 
 @app.route('/api/preview', methods=['POST'])
