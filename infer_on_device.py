@@ -113,14 +113,17 @@ def nms(boxes_xyxy, scores, iou_thresh=0.45):
 # ─────────────────────────────────────────────────────────────
 
 def _dfl(position):
-    """DFL 解码：softmax + 加权求和 → 4 个边界距离"""
-    import torch
-    x = torch.tensor(position)
+    """DFL 解码：softmax + 加权求和 → 4 个边界距离（纯 NumPy，无 torch 依赖）"""
+    x = position.astype(np.float32)
     n, c, h, w = x.shape
     mc = c // 4
-    y = x.reshape(n, 4, mc, h, w).softmax(2)
-    acc = torch.arange(mc, dtype=torch.float32).reshape(1, 1, mc, 1, 1)
-    return (y * acc).sum(2).numpy()
+    x = x.reshape(n, 4, mc, h, w)
+    # numerically stable softmax along axis=2
+    x = x - x.max(axis=2, keepdims=True)
+    e = np.exp(x)
+    y = e / e.sum(axis=2, keepdims=True)
+    acc = np.arange(mc, dtype=np.float32).reshape(1, 1, mc, 1, 1)
+    return (y * acc).sum(axis=2)
 
 
 def _box_process(position, input_wh=(640, 640)):
