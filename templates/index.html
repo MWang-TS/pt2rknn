@@ -94,6 +94,32 @@ select:focus,input:focus{border-color:#667eea}
 .dlb.green{background:#28a745;color:#fff}
 .dlb.purple{background:#667eea;color:#fff}
 .dlb:disabled{background:#bbb;cursor:not-allowed}
+/* ── 推理测试 Modal ── */
+.infer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto}
+.infer-modal{background:#fff;border-radius:16px;width:100%;max-width:760px;margin:auto;box-shadow:0 12px 40px rgba(0,0,0,.25);overflow:hidden}
+.infer-modal-header{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:16px 20px;display:flex;align-items:center;justify-content:space-between}
+.infer-modal-header h3{margin:0;font-size:1em}
+.infer-close-btn{background:rgba(255,255,255,.25);border:none;color:#fff;width:30px;height:30px;border-radius:50%;cursor:pointer;font-size:1.1em;display:flex;align-items:center;justify-content:center}
+.infer-modal-body{padding:20px}
+.infer-img-drop{border:2px dashed #c5cff5;border-radius:10px;padding:24px;text-align:center;cursor:pointer;background:#fafbff;transition:all .2s;margin-bottom:14px}
+.infer-img-drop:hover,.infer-img-drop.has{border-color:#667eea;background:#f0f2ff}
+.infer-img-drop input[type=file]{display:none}
+.infer-params{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.infer-params .fg{margin:0}
+.infer-run-btn{width:100%;padding:11px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:10px;font-size:.95em;font-weight:700;cursor:pointer;margin-bottom:14px;transition:opacity .2s}
+.infer-run-btn:disabled{background:#bbb;cursor:not-allowed}
+.infer-run-btn.acc{background:linear-gradient(135deg,#11998e,#38ef7d);margin-left:10px}
+.cos-good{color:#27ae60;font-weight:bold}.cos-warn{color:#f39c12;font-weight:bold}.cos-bad{color:#e74c3c;font-weight:bold}
+.acc-layer-table{width:100%;border-collapse:collapse;margin-top:8px;font-size:.83em}
+.acc-layer-table th{text-align:left;color:#888;padding:3px 8px;border-bottom:1px solid #eee}
+.acc-layer-table td{padding:3px 8px}
+.acc-layer-table td:last-child{text-align:right}
+.infer-result{display:none;border-top:1px solid #eee;padding-top:14px}
+.infer-result.show{display:block}
+.infer-result img{width:100%;border-radius:8px;border:1px solid #eee}
+.infer-summary{background:#f8f9ff;border-radius:8px;padding:12px 14px;font-size:.83em;font-family:monospace;white-space:pre-wrap;margin-top:10px;color:#333;max-height:200px;overflow-y:auto}
+.infer-meta-tag{font-size:.75em;background:#e0e5ff;color:#667eea;padding:2px 8px;border-radius:20px;margin-left:6px}
+.dlb.orange{background:#fd7e14;color:#fff}
 .hist-item{display:flex;justify-content:space-between;align-items:center;padding:11px 13px;border:1px solid #eee;border-radius:8px;margin-bottom:7px;transition:all .2s}
 .hist-item:hover{background:#f8f9ff;border-color:#c5cff5}
 .hist-name{font-weight:600;font-size:.88em;color:#333;margin-bottom:2px}
@@ -411,6 +437,7 @@ async function prepareCalibration() {
   } finally { btn.disabled=false; btn.textContent='✅ 确认提取并生成校准集'; }
 }
 
+
 function onQuantChange() {
   const isInt8 = document.getElementById('quantType').value === 'i8';
   document.getElementById('calibPanel').style.display = isInt8 ? '' : 'none';
@@ -443,7 +470,8 @@ async function doConvert() {
       const ab=document.getElementById('abtn');
       ab.className='abtn show';
       ab.innerHTML=`<a href="${d.download_url}" class="dlb green">⬇️ 下载 RKNN</a>
-        <button class="dlb purple" onclick="previewModel('${d.output_file}')">👁 Netron 预览</button>`;
+        <button class="dlb purple" onclick="previewModel('${d.output_file}')">👁 Netron 预览</button>
+        <button class="dlb orange" onclick="openInferModal('${d.output_file}',${JSON.stringify(selMeta&&selMeta.value||'')},${JSON.stringify(selMeta&&String(selMeta.input_size_default[0])||'640')},${JSON.stringify(selMeta&&String(selMeta.input_size_default[1])||'640')})">🧪 推理测试</button>`;
       loadHistory();
     } else {
       showRmsg('error','❌ 转换失败：<br><pre style="font-size:.82em;margin-top:5px;white-space:pre-wrap">'+d.message+'</pre>');
@@ -483,6 +511,7 @@ async function loadHistory() {
         <div class="hist-item">
           <div><div class="hist-name">${f.filename}</div><div class="hist-meta">${f.size} · ${f.time}</div></div>
           <div class="hist-acts">
+            <button class="dlb orange" style="font-size:.8em;padding:6px 13px" onclick="openInferModal('${f.filename}','${f.model_type}','${f.input_w}','${f.input_h}')">🧪 测试</button>
             <button class="dlb purple" style="font-size:.8em;padding:6px 13px" onclick="previewModel('${f.filename}')">👁 预览</button>
             <a href="${f.download_url}" class="dlb green" style="font-size:.8em;padding:6px 13px">⬇️ 下载</a>
           </div>
@@ -491,6 +520,158 @@ async function loadHistory() {
       list.innerHTML='<p style="text-align:center;color:#aaa;padding:16px 0">暂无转换记录</p>';
     }
   } catch(e){}
+}
+
+
+// ═══════════════════════════════════════
+// 推理测试 Modal
+// ═══════════════════════════════════════
+let inferFilename = '';
+let inferFile = null;
+
+function openInferModal(filename, modelType, inputW, inputH) {
+  inferFilename = filename;
+  inferFile = null;
+  document.getElementById('inferOverlay').style.display = 'flex';
+  document.getElementById('inferModelTag').textContent = filename;
+  document.getElementById('inferDrop').classList.remove('has');
+  document.getElementById('inferThumb').style.display = 'none';
+  document.getElementById('inferDropText').textContent = '📷 点击选择或拖拽测试图片（JPG/PNG/BMP）';
+  document.getElementById('inferImgInput').value = '';
+  document.getElementById('inferRunBtn').disabled = true;
+  document.getElementById('accuracyRunBtn').disabled = true;
+  document.getElementById('accResult').className = 'infer-result';
+  document.getElementById('accSummary').textContent = '';
+  document.getElementById('accLayerTable').innerHTML = '';
+  document.getElementById('inferResult').className = 'infer-result';
+  document.getElementById('inferSummary').textContent = '';
+  document.getElementById('inferResultImg').src = '';
+  // pre-fill class names from meta
+  fetch('/api/meta/'+filename).then(r=>r.json()).then(d=>{
+    if(d.success && d.class_names && d.class_names.length)
+      document.getElementById('inferClassNames').value = d.class_names.join(',');
+  }).catch(()=>{});
+  // drag support
+  const drop = document.getElementById('inferDrop');
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('has'); };
+  drop.ondragleave = () => drop.classList.remove('has');
+  drop.ondrop = e => { e.preventDefault(); if(e.dataTransfer.files[0]) setInferImg(e.dataTransfer.files[0]); };
+}
+
+function closeInferModal() {
+  document.getElementById('inferOverlay').style.display = 'none';
+}
+
+function onInferImgSelect(input) {
+  if(input.files[0]) setInferImg(input.files[0]);
+}
+
+function setInferImg(file) {
+  inferFile = file;
+  const url = URL.createObjectURL(file);
+  const thumb = document.getElementById('inferThumb');
+  thumb.src = url; thumb.style.display = 'block';
+  document.getElementById('inferDropText').textContent = file.name;
+  document.getElementById('inferDrop').classList.add('has');
+  document.getElementById('inferRunBtn').disabled = false;
+  document.getElementById('accuracyRunBtn').disabled = false;
+}
+
+async function runInference() {
+  if(!inferFile || !inferFilename) return;
+  const btn = document.getElementById('inferRunBtn');
+  btn.disabled = true; btn.textContent = '⏳ 推理中…';
+  document.getElementById('inferResult').className = 'infer-result';
+  document.getElementById('inferSummary').textContent = '';
+
+  const form = new FormData();
+  form.append('image', inferFile);
+  form.append('rknn_filename', inferFilename);
+  form.append('conf_thresh', document.getElementById('inferConf').value);
+  form.append('iou_thresh', document.getElementById('inferIou').value);
+  const cn = document.getElementById('inferClassNames').value.trim();
+  if(cn) form.append('class_names', cn);
+
+  try {
+    const res = await fetch('/api/infer', {method:'POST', body:form});
+    const d = await res.json();
+    if(d.success) {
+      document.getElementById('inferResultImg').src = 'data:image/jpeg;base64,' + d.image_b64;
+      document.getElementById('inferSummary').textContent = d.summary;
+      document.getElementById('inferTimeTag').textContent = '推理耗时 ' + d.infer_ms + ' ms（模拟器）';
+      document.getElementById('inferResult').className = 'infer-result show';
+    } else {
+      document.getElementById('inferSummary').textContent = '❌ ' + d.message;
+      document.getElementById('inferResult').className = 'infer-result show';
+    }
+  } catch(e) {
+    document.getElementById('inferSummary').textContent = '❌ 请求失败: ' + e.message;
+    document.getElementById('inferResult').className = 'infer-result show';
+  } finally {
+    btn.disabled = false; btn.textContent = '🚀 开始推理';
+  }
+}
+
+// ═══════════════════════════════════════
+// 量化精度分析
+// ═══════════════════════════════════════
+async function runAccuracyAnalysis() {
+  if(!inferFile || !inferFilename) return;
+  const btn = document.getElementById('accuracyRunBtn');
+  btn.disabled = true; btn.textContent = '⏳ 分析中\u2026';
+  document.getElementById('accResult').className = 'infer-result';
+  document.getElementById('accSummary').textContent = '';
+  document.getElementById('accLayerTable').innerHTML = '';
+
+  const form = new FormData();
+  form.append('image', inferFile);
+  form.append('rknn_filename', inferFilename);
+  const doQ = document.getElementById('accDoQuant').checked;
+  form.append('do_quantization', doQ ? 'true' : 'false');
+
+  try {
+    const res = await fetch('/api/accuracy', {method:'POST', body:form});
+    const d = await res.json();
+    if(d.success) {
+      document.getElementById('accModeTag').textContent = d.quant_mode || '';
+      document.getElementById('accSummary').textContent = d.summary || '';
+      if(d.layers && d.layers.length > 0) {
+        document.getElementById('accLayerTable').innerHTML = _renderLayerTable(d.layers);
+      } else if(d.raw_text && d.raw_text.trim()) {
+        document.getElementById('accLayerTable').innerHTML =
+          '<pre style="font-size:.78em;max-height:200px;overflow:auto;background:#f8f9fa;padding:8px;border-radius:6px">' +
+          d.raw_text.replace(/</g,'&lt;') + '</pre>';
+      }
+      document.getElementById('accResult').className = 'infer-result show';
+    } else {
+      document.getElementById('accSummary').textContent = '\u274c ' + d.message;
+      document.getElementById('accResult').className = 'infer-result show';
+    }
+  } catch(e) {
+    document.getElementById('accSummary').textContent = '\u274c \u8bf7\u6c42\u5931\u8d25: ' + e.message;
+    document.getElementById('accResult').className = 'infer-result show';
+  } finally {
+    btn.disabled = false; btn.textContent = '\U0001f52c \u7cbe\u5ea6\u5206\u6790';
+  }
+}
+
+function _renderLayerTable(layers) {
+  const show = layers.slice(0, 30);
+  const rows = show.map(l => {
+    const v = l.cos_sim;
+    let cls = '', txt = '-';
+    if(v !== null && v !== undefined) {
+      txt = v.toFixed(4);
+      cls = v >= 0.99 ? 'cos-good' : v >= 0.95 ? 'cos-warn' : 'cos-bad';
+    }
+    return `<tr><td>${l.name}</td><td class="${cls}">${txt}</td></tr>`;
+  }).join('');
+  const more = layers.length > 30
+    ? `<tr><td colspan="2" style="color:#aaa;text-align:center">\u2026\u5171 ${layers.length} \u5c42\uff0c\u4ec5\u663e\u793a\u524d 30</td></tr>` : '';
+  return `<table class="acc-layer-table">
+    <tr><th>\u5c42\u540d\u79f0</th><th style="text-align:right">\u4f59\u5f26\u76f8\u4f3c\u5ea6</th></tr>
+    ${rows}${more}
+  </table>`;
 }
 
 // ═══════════════════════════════════════
@@ -507,5 +688,55 @@ function stepMark(n,state){
 init();
 setInterval(loadHistory,30000);
 </script>
+
+<!-- ════════ 推理测试 Modal ════════ -->
+<div class="infer-overlay" id="inferOverlay" style="display:none" onclick="if(event.target===this)closeInferModal()">
+  <div class="infer-modal">
+    <div class="infer-modal-header">
+      <h3>🧪 推理测试 <span class="infer-meta-tag" id="inferModelTag">-</span></h3>
+      <button class="infer-close-btn" onclick="closeInferModal()">✕</button>
+    </div>
+    <div class="infer-modal-body">
+      <div class="infer-img-drop" id="inferDrop" onclick="document.getElementById('inferImgInput').click()">
+        <input type="file" id="inferImgInput" accept="image/*" onchange="onInferImgSelect(this)">
+        <div id="inferDropText">📷 点击选择或拖拽测试图片（JPG/PNG/BMP）</div>
+        <img id="inferThumb" style="max-height:120px;margin-top:8px;display:none;border-radius:6px" src="">
+      </div>
+      <div class="infer-params">
+        <div class="fg"><label>置信度阈值 (Conf)</label>
+          <input type="number" id="inferConf" value="0.25" min="0.01" max="0.99" step="0.05"></div>
+        <div class="fg"><label>NMS 阈值 (IoU)</label>
+          <input type="number" id="inferIou" value="0.45" min="0.1" max="0.99" step="0.05"></div>
+      </div>
+      <div class="fg" style="margin-bottom:14px">
+        <label>类别名称（逗号分隔，空则默认 cls0/cls1/…）</label>
+        <input type="text" id="inferClassNames" placeholder="例：cat,dog,person 或留空">
+      </div>
+      <button class="infer-run-btn" id="inferRunBtn" onclick="runInference()" disabled>🚀 开始推理</button>
+      <div style="display:flex;align-items:center;margin-bottom:14px">
+        <button class="infer-run-btn acc" id="accuracyRunBtn" onclick="runAccuracyAnalysis()" disabled>🔬 精度分析</button>
+        <label style="font-size:.82em;color:#666;margin-left:12px;cursor:pointer" title="对 i8 模型用单张测试图快速量化，对比 ONNX vs INT8 RKNN 误差（非生产级校准）">
+          <input type="checkbox" id="accDoQuant" style="margin-right:4px">INT8 量化对比（i8 模型专用）
+        </label>
+      </div>
+      <div class="infer-result" id="accResult">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <strong style="font-size:.9em">📊 量化精度分析</strong>
+          <span id="accModeTag" style="font-size:.78em;color:#888;background:#f0f4ff;padding:2px 8px;border-radius:10px"></span>
+        </div>
+        <div class="infer-summary" id="accSummary" style="white-space:pre-wrap"></div>
+        <div id="accLayerTable"></div>
+      </div>
+      <div class="infer-result" id="inferResult">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <strong style="font-size:.9em">推理结果</strong>
+          <span id="inferTimeTag" style="font-size:.8em;color:#888"></span>
+        </div>
+        <img id="inferResultImg" src="" alt="result">
+        <div class="infer-summary" id="inferSummary"></div>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>

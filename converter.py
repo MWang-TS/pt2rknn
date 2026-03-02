@@ -54,6 +54,48 @@ def _resolve_dataset(calibration_dir: str, subdir: str):
 # PT → ONNX（仅 YOLO 系列，使用 ultralytics 导出）
 # ──────────────────────────────────────────────────────────────
 
+
+def pt_to_rknnopt(pt_path: str, input_size: tuple, tmp_dir: str):
+    """
+    使用 Rockchip 修改版 ultralytics 导出 rknnopt torchscript。
+    输出为多头分离格式（3 scale × bbox_dfl + class_scores），
+    可被 load_pytorch 正确量化，避免 bbox/class 共用 INT8 scale 的问题。
+    """
+    import sys
+    # 优先使用 lib/ultralytics_yolov8（Rockchip 版）
+    rk_lib = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'lib', 'ultralytics_yolov8'))
+    inserted = False
+    try:
+        if os.path.isdir(rk_lib):
+            sys.path.insert(0, rk_lib)
+            inserted = True
+        from ultralytics import YOLO
+        model = YOLO(pt_path)
+        result = model.export(
+            format='rknn',
+            imgsz=list(input_size),
+            simplify=True,
+            opset=12,
+            dynamic=False,
+        )
+        ts_path = str(result)
+        if not os.path.exists(ts_path):
+            # ultralytics rknn export 生成 _rknnopt.torchscript
+            base = os.path.splitext(pt_path)[0]
+            for suffix in ('_rknnopt.torchscript', '_rknnopt.pt'):
+                if os.path.exists(base + suffix):
+                    ts_path = base + suffix
+                    break
+            else:
+                return False, 'rknnopt 导出成功但找不到输出文件', ''
+        logger.info(f'[PT→rknnopt] 导出完成：{ts_path}')
+        return True, 'PT → rknnopt torchscript 导出成功', ts_path
+    except Exception as e:
+        return False, f'PT → rknnopt 导出失败：{e}', ''
+    finally:
+        if inserted and rk_lib in sys.path:
+            sys.path.remove(rk_lib)
+
 def pt_to_onnx(pt_path: str, input_size: tuple, tmp_dir: str):
     try:
         from ultralytics import YOLO
@@ -143,6 +185,45 @@ def onnx_to_rknn(onnx_path, output_path, platform, do_quant,
 # 统一入口
 # ──────────────────────────────────────────────────────────────
 
+def torchscript_to_rknn(ts_path, output_path, platform, do_quant,
+                        dataset_path, mean_values, std_values, input_size,
+                        verbose=False):
+    """使用 load_pytorch 将 rknnopt torchscript 转换为 RKNN（分头量化，INT8 更准确）"""
+    from rknn.api import RKNN
+    rknn = RKNN(verbose=verbose)
+    try:
+        ret = rknn.config(mean_values=mean_values, std_values=std_values,
+                          target_platform=platform)
+        if ret != 0:
+            return False, f'RKNN config 失败，ret={ret}'
+
+        logger.info(f'[TS→RKNN] 加载 torchscript：{ts_path}')
+        ret = rknn.load_pytorch(model=ts_path,
+                                input_size_list=[[1, 3, input_size[0], input_size[1]]])
+        if ret != 0:
+            return False, f'load_pytorch 失败，ret={ret}'
+
+        logger.info(f'[TS→RKNN] 构建 RKNN 模型 (do_quant={do_quant}) ...')
+        if do_quant and dataset_path:
+            ret = rknn.build(do_quantization=True, dataset=dataset_path)
+        else:
+            if do_quant and not dataset_path:
+                logger.warning('缺少校准数据集，将回退到 FP16 模式')
+            ret = rknn.build(do_quantization=False)
+        if ret != 0:
+            return False, f'RKNN build 失败，ret={ret}'
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        ret = rknn.export_rknn(output_path)
+        if ret != 0:
+            return False, f'export_rknn 失败，ret={ret}'
+        return True, 'rknnopt torchscript → RKNN 成功（分头量化）'
+    except Exception as e:
+        return False, f'转换异常：{e}'
+    finally:
+        rknn.release()
+
+
 class UniversalConverter:
     def __init__(self, verbose=False):
         self.verbose = verbose
@@ -163,16 +244,42 @@ class UniversalConverter:
                 if cfg['source_type'] == 'onnx_only':
                     return False, f"{cfg['short']} 只支持 .onnx 输入，不支持 .pt", ''
 
-                logger.info("检测到 PT 文件，开始 PT → ONNX 导出...")
-                ok, msg, onnx_path = pt_to_onnx(
+                logger.info("检测到 PT 文件，优先尝试 rknnopt 导出...")
+                ts_ok, ts_msg, ts_path_val = pt_to_rknnopt(
                     pt_path=input_path,
                     input_size=input_size,
                     tmp_dir=os.path.dirname(input_path),
                 )
-                if not ok:
-                    return False, msg, ''
-                steps.append(f"PT → ONNX：{msg}")
-                tmp_onnx = onnx_path
+                if ts_ok:
+                    logger.info('[convert] rknnopt 成功，使用 load_pytorch 量化路径')
+                    steps.append(f"PT → rknnopt torchscript：{ts_msg}")
+                    ok2, msg2 = torchscript_to_rknn(
+                        ts_path=ts_path_val,
+                        output_path=output_path,
+                        platform=platform,
+                        do_quant=do_quant,
+                        dataset_path=_resolve_dataset(calibration_dir, cfg['calibration_subdir']) if do_quant else None,
+                        mean_values=cfg['mean_values'],
+                        std_values=cfg['std_values'],
+                        input_size=input_size,
+                        verbose=self.verbose,
+                    )
+                    steps.append(f"rknnopt torchscript → RKNN：{msg2}")
+                    if not ok2:
+                        return False, '\n'.join(steps), ''
+                    return True, '\n'.join(steps), ''
+                else:
+                    logger.warning(f'[convert] rknnopt 失败（{ts_msg}），回退到标准 ONNX')
+                    steps.append(f"⚠️ rknnopt 回退：{ts_msg}")
+                    ok, msg, onnx_path = pt_to_onnx(
+                        pt_path=input_path,
+                        input_size=input_size,
+                        tmp_dir=os.path.dirname(input_path),
+                    )
+                    if not ok:
+                        return False, msg, ''
+                    steps.append(f"PT → ONNX：{msg}")
+                    tmp_onnx = onnx_path
 
             elif ext == '.onnx':
                 onnx_path = input_path
@@ -204,7 +311,16 @@ class UniversalConverter:
             steps.append(f"ONNX → RKNN：{msg}")
 
             if ok:
-                return True, '\n'.join(steps), output_path
+                # 将 ONNX 复制到 output 目录旁边，供 simulator 推理使用
+                import shutil
+                onnx_out = os.path.splitext(output_path)[0] + '.onnx'
+                try:
+                    shutil.copy2(onnx_path, onnx_out)
+                    logger.info(f"已保存 ONNX 到：{onnx_out}")
+                except Exception as e:
+                    onnx_out = ''
+                    logger.warning(f"保存 ONNX 失败：{e}")
+                return True, '\n'.join(steps), onnx_out
             else:
                 return False, msg, ''
 

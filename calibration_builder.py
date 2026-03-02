@@ -171,7 +171,12 @@ def build_calibration_dataset(
 
     # 确保输出目录存在
     images_out = os.path.join(output_dir, 'images')
-    os.makedirs(images_out, exist_ok=True)
+    # 每次提取前清空旧目录（含软链接），避免 dataset.txt 与实际文件不一致
+    if os.path.islink(images_out):
+        os.unlink(images_out)
+    elif os.path.isdir(images_out):
+        shutil.rmtree(images_out)
+    os.makedirs(images_out)
 
     # 复制图片（若已是相同路径则跳过复制）
     copied_paths = []
@@ -197,6 +202,70 @@ def build_calibration_dataset(
     )
     logger.info(f"[校准] {msg}")
     return True, msg, len(copied_paths)
+
+
+def link_calibration_dataset(external_path, output_dir, force=False):
+    """
+    不复制图片，而是在 output_dir/images 创建符号链接指向外部目录。
+    支持 Windows/WSL 路径自动转换。
+    返回 (success, message, count)
+    """
+    external_path = _normalize_path(external_path)
+    if not os.path.isdir(external_path):
+        return False, f'路径不存在：{external_path}', 0
+
+    fmt, fmt_desc = detect_dataset_format(external_path)
+    if fmt in ('invalid', 'empty'):
+        return False, f'无法从该路径找到图片：{fmt_desc}', 0
+
+    # 根据格式确定实际图片所在目录作为软链接目标
+    if fmt == 'yolo':
+        link_target = os.path.join(external_path, 'images')
+    elif fmt == 'coco':
+        link_target = external_path
+        for cd in os.listdir(external_path):
+            cdp = os.path.join(external_path, cd)
+            if os.path.isdir(cdp) and ('val' in cd.lower() or 'train' in cd.lower()):
+                link_target = cdp
+                break
+    else:
+        link_target = external_path
+
+    link_target = os.path.abspath(link_target)
+
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    images_link = os.path.join(output_dir, 'images')
+
+    # 处理已存在的 images 路径
+    if os.path.islink(images_link):
+        os.unlink(images_link)                      # 删除旧软链接
+    elif os.path.isdir(images_link):
+        if not force:
+            return False, (
+                f'已存在真实图片目录：{images_link}\n'
+                '请勾选「强制覆盖」后重试，或手动删除该目录。'
+            ), 0
+        import shutil
+        shutil.rmtree(images_link)
+        logger.info('[校准] 已删除旧 images/ 目录以创建软链接：%s', images_link)
+
+    os.symlink(link_target, images_link)
+
+    # 统计并生成 dataset.txt
+    images = _collect_images_recursive(link_target, max_n=9999)
+    txt_path = os.path.join(output_dir, 'dataset.txt')
+    with open(txt_path, 'w') as f:
+        for p in images:
+            f.write(os.path.abspath(p) + '\n')
+
+    msg = (
+        f'✅ 已创建软链接：\n'
+        f'  {images_link}\n  → {link_target}\n'
+        f'共 {len(images)} 张图片，已生成 dataset.txt'
+    )
+    logger.info('[校准] 软链接 %s → %s，%d 张图片', images_link, link_target, len(images))
+    return True, msg, len(images)
 
 
 def get_calibration_status(calibration_dir, subdir):

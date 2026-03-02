@@ -10,7 +10,8 @@ from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from converter import UniversalConverter
 from model_registry import MODEL_REGISTRY, get_model_types_meta, validate_file_ext, validate_pt_task
-from calibration_builder import build_calibration_dataset, get_calibration_status, detect_dataset_format, normalize_path
+from calibration_builder import build_calibration_dataset, get_calibration_status, detect_dataset_format, normalize_path, link_calibration_dataset
+from inferencer import run_inference, img_to_base64, run_accuracy_analysis
 try:
     import netron
     NETRON_AVAILABLE = True
@@ -135,7 +136,7 @@ def convert_model():
         # 执行转换
         do_quant = (quant_type == 'i8')
         converter = UniversalConverter(verbose=True)
-        success, message, _ = converter.convert(
+        success, message, onnx_out = converter.convert(
             model_type=model_type,
             input_path=upload_path,
             platform=platform,
@@ -146,6 +147,26 @@ def convert_model():
         )
 
         if success:
+            # 保存模型元数据，供推理测试使用
+            cfg = MODEL_REGISTRY[model_type]
+            meta = {
+                'model_type': model_type,
+                'input_w': input_width,
+                'input_h': input_height,
+                'platform': platform,
+                'quant_type': quant_type,
+                'class_names': [],
+                'onnx_path': onnx_out,
+                'mean_values': cfg['mean_values'],
+                'std_values': cfg['std_values'],
+            }
+            meta_path = os.path.join(app.config['OUTPUT_FOLDER'],
+                                     output_filename + '.meta.json')
+            try:
+                with open(meta_path, 'w', encoding='utf-8') as mf:
+                    json.dump(meta, mf, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
             return jsonify({
                 'success': True,
                 'message': message,
@@ -220,6 +241,27 @@ def calibration_prepare():
     })
 
 
+@app.route('/api/calibration/link', methods=['POST'])
+def calibration_link():
+    """在 calibration_data/<subdir>/images 创建软链接指向外部目录，不复制文件"""
+    data = request.get_json()
+    model_type   = data.get('model_type', '')
+    dataset_path = data.get('dataset_path', '').strip()
+
+    if model_type not in MODEL_REGISTRY:
+        return jsonify({'success': False, 'message': '未知模型类型'}), 400
+    if not dataset_path:
+        return jsonify({'success': False, 'message': '未提供数据集路径'}), 400
+
+    dataset_path = normalize_path(dataset_path)
+    force = bool(data.get('force', False))
+    subdir = MODEL_REGISTRY[model_type]['calibration_subdir']
+    output_dir = os.path.join(app.config['CALIBRATION_FOLDER'], subdir)
+
+    ok, msg, count = link_calibration_dataset(dataset_path, output_dir, force=force)
+    return jsonify({'success': ok, 'message': msg, 'count': count})
+
+
 @app.route('/api/calibration/detect', methods=['POST'])
 def calibration_detect():
     """仅探测数据集路径的格式，不做任何复制"""
@@ -255,6 +297,183 @@ def preview_model():
         return jsonify({'success': False, 'message': f'预览启动失败: {str(e)}'}), 500
 
 
+# ─────────────────────────────────────────────────────────────
+# 推理测试接口
+# ─────────────────────────────────────────────────────────────
+
+@app.route('/api/meta/<filename>', methods=['GET'])
+def get_model_meta(filename):
+    """读取 RKNN 模型的元数据 JSON"""
+    meta_path = os.path.join(app.config['OUTPUT_FOLDER'], filename + '.meta.json')
+    if not os.path.exists(meta_path):
+        return jsonify({'success': False, 'message': '元数据不存在'}), 404
+    with open(meta_path, 'r', encoding='utf-8') as f:
+        meta = json.load(f)
+    return jsonify({'success': True, **meta})
+
+
+@app.route('/api/meta/<filename>', methods=['POST'])
+def update_model_meta(filename):
+    """更新模型元数据（如 class_names）"""
+    meta_path = os.path.join(app.config['OUTPUT_FOLDER'], filename + '.meta.json')
+    if not os.path.exists(meta_path):
+        return jsonify({'success': False, 'message': '元数据不存在'}), 404
+    data = request.get_json()
+    with open(meta_path, 'r', encoding='utf-8') as f:
+        meta = json.load(f)
+    for k in ('class_names', 'input_w', 'input_h'):
+        if k in data:
+            meta[k] = data[k]
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    return jsonify({'success': True})
+
+
+@app.route('/api/infer', methods=['POST'])
+def infer_model():
+    """上传图片，使用指定 RKNN 模型在模拟器模式下推理，返回可视化结果"""
+    try:
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'message': '未上传图片'}), 400
+
+        rknn_filename = secure_filename(request.form.get('rknn_filename', ''))
+        if not rknn_filename or not rknn_filename.endswith('.rknn'):
+            return jsonify({'success': False, 'message': '未指定 RKNN 文件名'}), 400
+
+        rknn_path = os.path.join(app.config['OUTPUT_FOLDER'], rknn_filename)
+        if not os.path.exists(rknn_path):
+            return jsonify({'success': False, 'message': 'RKNN 文件不存在'}), 404
+
+        # 读取元数据
+        meta_path = rknn_path + '.meta.json'
+        meta = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+
+        model_type  = request.form.get('model_type')  or meta.get('model_type', 'yolov8_det')
+        input_w     = int(request.form.get('input_w')  or meta.get('input_w', 640))
+        input_h     = int(request.form.get('input_h')  or meta.get('input_h', 640))
+        conf_thresh = float(request.form.get('conf_thresh', 0.25))
+        iou_thresh  = float(request.form.get('iou_thresh', 0.45))
+        class_names_raw = request.form.get('class_names', '')
+        if class_names_raw.strip():
+            class_names = [n.strip() for n in class_names_raw.split(',') if n.strip()]
+        else:
+            class_names = meta.get('class_names') or []
+
+        # 读取上传图片
+        import numpy as np
+        img_file = request.files['image']
+        file_bytes = img_file.read()
+        nparr = np.frombuffer(file_bytes, np.uint8)
+        import cv2
+        img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            return jsonify({'success': False, 'message': '无法解码图片，请上传 JPG/PNG/BMP'}), 400
+
+        result_bgr, summary, detections, infer_ms = run_inference(
+            rknn_path=rknn_path,
+            img_bgr=img_bgr,
+            model_type=model_type,
+            input_w=input_w,
+            input_h=input_h,
+            conf_thresh=conf_thresh,
+            iou_thresh=iou_thresh,
+            class_names=class_names if class_names else None,
+            onnx_path=meta.get('onnx_path', ''),
+            mean_values=meta.get('mean_values'),
+            std_values=meta.get('std_values'),
+            platform=meta.get('platform', 'rk3576'),
+        )
+
+        img_b64 = img_to_base64(result_bgr)
+        return jsonify({
+            'success': True,
+            'image_b64': img_b64,
+            'summary': summary,
+            'detections': detections,
+            'infer_ms': round(infer_ms, 1),
+        })
+
+    except RuntimeError as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'message': '推理失败：{}'.format(str(e))}), 500
+
+
+
+@app.route('/api/accuracy', methods=['POST'])
+def accuracy_analysis_endpoint():
+    """量化精度分析：对比 ONNX 与 RKNN 逐层输出，返回余弦相似度报告"""
+    try:
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'message': '未上传图片'}), 400
+
+        rknn_filename = secure_filename(request.form.get('rknn_filename', ''))
+        if not rknn_filename or not rknn_filename.endswith('.rknn'):
+            return jsonify({'success': False, 'message': '未指定 RKNN 文件名'}), 400
+
+        rknn_path = os.path.join(app.config['OUTPUT_FOLDER'], rknn_filename)
+        if not os.path.exists(rknn_path):
+            return jsonify({'success': False, 'message': 'RKNN 文件不存在'}), 404
+
+        meta_path = rknn_path + '.meta.json'
+        meta = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+
+        onnx_path = meta.get('onnx_path', '')
+        if not onnx_path or not os.path.exists(onnx_path):
+            return jsonify({'success': False,
+                            'message': 'ONNX 文件不存在，请重新转换以生成配套 ONNX'}), 404
+
+        input_w    = int(meta.get('input_w', 640))
+        input_h    = int(meta.get('input_h', 640))
+        platform   = meta.get('platform', 'rk3576')
+        quant_type = meta.get('quant_type', 'fp')
+        mean_values = meta.get('mean_values')
+        std_values  = meta.get('std_values')
+
+        # 是否进行 INT8 量化对比（前端可选，且模型本身须为 i8）
+        do_quant = request.form.get('do_quantization', 'false').lower() == 'true'
+        if do_quant and quant_type != 'i8':
+            do_quant = False   # 非 i8 模型无需量化对比
+
+        # 校准数据集（仅 do_quant=True 时生效）
+        dataset_path = None
+        if do_quant:
+            ds = meta.get('dataset_path', '')
+            if ds and os.path.exists(ds):
+                dataset_path = ds
+
+        import numpy as np
+        import cv2
+        nparr = np.frombuffer(request.files['image'].read(), np.uint8)
+        img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            return jsonify({'success': False, 'message': '无法解码图片'}), 400
+
+        result = run_accuracy_analysis(
+            onnx_path=onnx_path,
+            img_bgr=img_bgr,
+            input_w=input_w,
+            input_h=input_h,
+            mean_values=mean_values,
+            std_values=std_values,
+            platform=platform,
+            do_quantization=do_quant,
+            dataset_path=dataset_path,
+        )
+        return jsonify({'success': True, **result})
+
+    except RuntimeError as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'message': '精度分析失败：{}'.format(str(e))}), 500
+
+
 @app.route('/api/download/<filename>', methods=['GET'])
 def download_file(filename):
     """下载转换后的文件"""
@@ -280,12 +499,23 @@ def list_outputs():
                 file_path = os.path.join(output_folder, filename)
                 file_size = os.path.getsize(file_path) / 1024 / 1024  # MB
                 file_time = os.path.getmtime(file_path)
-                
+                # 读取元数据（如有）
+                meta = {}
+                meta_path = file_path + '.meta.json'
+                if os.path.exists(meta_path):
+                    try:
+                        with open(meta_path, 'r', encoding='utf-8') as mf:
+                            meta = json.load(mf)
+                    except Exception:
+                        pass
                 files.append({
                     'filename': filename,
                     'size': f'{file_size:.2f} MB',
                     'time': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_time)),
-                    'download_url': f'/api/download/{filename}'
+                    'download_url': f'/api/download/{filename}',
+                    'model_type': meta.get('model_type', ''),
+                    'input_w': meta.get('input_w', 640),
+                    'input_h': meta.get('input_h', 640),
                 })
         
         # 按时间倒序排序
