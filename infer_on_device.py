@@ -408,36 +408,58 @@ def run(args):
                   f'  min={o.min():.4f}  max={o.max():.4f}  mean={o.mean():.4f}')
         if model_type == 'yolov8_det' and outputs:
             if len(outputs) >= 6:
-                # rknnopt 格式：打印各 scale 的 class score 统计
+                # rknnopt 格式：打印各 scale 的 class score 统计 + Top-10
                 pair = len(outputs) // 3
                 print('\n[DEBUG] rknnopt 各分支 class score 统计：')
+                all_cls_flat, all_scores_flat = [], []
                 for i in range(3):
-                    cls = outputs[pair * i + 1]
-                    sig = 1.0 / (1.0 + np.exp(-cls)) if cls.max() > 1.0 or cls.min() < 0.0 else cls
-                    print(f'  branch[{i}] class: shape={list(cls.shape)}'
-                          f'  max_prob={sig.max():.4f}  非零数={np.count_nonzero(cls)}')
+                    bbox_out = outputs[pair * i]       # [1,64,H,W]
+                    cls_out  = outputs[pair * i + 1]   # [1,nc,H,W]
+                    sig_cls = 1.0 / (1.0 + np.exp(-cls_out)) if (cls_out.max() > 1.0 or cls_out.min() < 0.0) else cls_out
+                    h, w = cls_out.shape[2], cls_out.shape[3]
+                    # [1,nc,H,W] → [H*W, nc]
+                    cls_hw = sig_cls[0].transpose(1, 2, 0).reshape(-1, sig_cls.shape[1])
+                    best_score = cls_hw.max(axis=1)
+                    best_cls   = cls_hw.argmax(axis=1)
+                    print(f'  branch[{i}] box:{list(bbox_out.shape)}  cls:{list(cls_out.shape)}'
+                          f'  max_prob={float(sig_cls.max()):.4f}  top_anchor_score={float(best_score.max()):.4f}')
+                    all_cls_flat.append(best_cls)
+                    all_scores_flat.append(best_score)
+                # 合并所有分支打印 Top-10
+                all_scores = np.concatenate(all_scores_flat)
+                all_cls    = np.concatenate(all_cls_flat)
+                top_idx  = np.argsort(all_scores)[::-1][:10]
+                print(f'\n[DEBUG] Top10 置信度（rknnopt，已 sigmoid）：')
+                for k in top_idx:
+                    print(f'  anchor {int(k):5d}  cls={int(all_cls[k])}'
+                          f'  prob={float(all_scores[k]):.4f}')
             else:
-                # 标准格式：逐通道统计
+                # 标准格式：单张量 [1, 4+nc, 8400]
                 pred = outputs[0]
                 if pred.ndim == 3:
-                    pred = pred[0]
+                    pred = pred[0]   # → [4+nc, 8400]
                 print(f'\n[DEBUG] 逐通道统计（shape={list(pred.shape)}）：')
-                for ch in range(pred.shape[0]):
-                    row = pred[ch]
-                    print(f'  ch[{ch}]: min={row.min():.4f}  max={row.max():.4f}'
-                          f'  mean={row.mean():.4f}  非零数={np.count_nonzero(row)}')
-                pred_t = pred.T
-                nc = pred_t.shape[1] - 4
-                class_scores_raw = pred_t[:, 4:]
-                cls_ids_d = np.argmax(class_scores_raw, axis=1)
-                raw = class_scores_raw[np.arange(len(cls_ids_d)), cls_ids_d]
-                sig = 1.0 / (1.0 + np.exp(-raw)) if raw.max() > 1.0 or raw.min() < 0.0 else raw
-                top_idx = np.argsort(sig)[::-1][:10]
-                note = '（logit→sigmoid）' if raw.max() > 1.0 or raw.min() < 0.0 else '（已是概率）'
-                print(f'\n[DEBUG] Top10 置信度 {note}：')
-                for k in top_idx:
-                    print(f'  anchor {k:5d}  cls={cls_ids_d[k]}'
-                          f'  raw={raw[k]:.4f}  prob={sig[k]:.4f}')
+                for ch in range(min(pred.shape[0], 8)):   # 只打印前8通道避免刷屏
+                    row = pred[ch].flatten()
+                    print(f'  ch[{ch}]: min={float(row.min()):.4f}  max={float(row.max()):.4f}'
+                          f'  mean={float(row.mean()):.4f}  非零数={int(np.count_nonzero(row))}')
+                # pred 应为 [4+nc, N]，转置为 [N, 4+nc]
+                if pred.ndim == 2:
+                    pred_t = pred.T            # [N, 4+nc]
+                    nc = pred_t.shape[1] - 4
+                    if nc > 0:
+                        class_scores_raw = pred_t[:, 4:]
+                        cls_ids_d = np.argmax(class_scores_raw, axis=1)
+                        raw = class_scores_raw[np.arange(len(cls_ids_d)), cls_ids_d]
+                        sig = 1.0 / (1.0 + np.exp(-raw)) if (raw.max() > 1.0 or raw.min() < 0.0) else raw
+                        top_idx = np.argsort(sig)[::-1][:10]
+                        note = '（logit→sigmoid）' if (raw.max() > 1.0 or raw.min() < 0.0) else '（已是概率）'
+                        print(f'\n[DEBUG] Top10 置信度 {note}（nc={nc}）：')
+                        for k in top_idx:
+                            print(f'  anchor {int(k):5d}  cls={int(cls_ids_d[k])}'
+                                  f'  raw={float(raw[k]):.4f}  prob={float(sig[k]):.4f}')
+                else:
+                    print(f'  [WARN] pred.ndim={pred.ndim}，非标准单输出格式，跳过 Top10 统计')
         print()
 
     # 后处理
