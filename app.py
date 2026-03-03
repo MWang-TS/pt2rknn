@@ -511,7 +511,7 @@ def clear_outputs():
         output_folder = app.config['OUTPUT_FOLDER']
         removed = 0
         for fname in os.listdir(output_folder):
-            if fname.endswith('.rknn') or fname.endswith('.meta.json'):
+            if fname.endswith('.rknn') or fname.endswith('.meta.json') or fname.endswith('.onnx'):
                 os.remove(os.path.join(output_folder, fname))
                 removed += 1
         return jsonify({'success': True, 'message': f'已清空 {removed} 个文件'})
