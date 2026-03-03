@@ -3,12 +3,19 @@ PT to RKNN 转换工具 - Flask Web服务 v2
 支持：YOLOv8-Det/Seg/Pose/OBB、ResNet、RetinaFace
 """
 import os
+import sys
+import re
 import time
 import json
+import queue
 import socket
-from flask import Flask, render_template, request, jsonify, send_file
+import logging
+import threading
+import uuid
+from flask import Flask, render_template, request, jsonify, send_file, Response
+from flask import stream_with_context
 from werkzeug.utils import secure_filename
-from converter import UniversalConverter
+from converter import UniversalConverter, pt_to_onnx
 from model_registry import MODEL_REGISTRY, get_model_types_meta, validate_file_ext, validate_pt_task
 from calibration_builder import build_calibration_dataset, get_calibration_status, detect_dataset_format, normalize_path, link_calibration_dataset
 from inferencer import run_inference, img_to_base64, run_accuracy_analysis
@@ -17,6 +24,96 @@ try:
     NETRON_AVAILABLE = True
 except ImportError:
     NETRON_AVAILABLE = False
+
+# ─── 异步转换任务管理 ───────────────────────────────────
+_jobs = {}          # job_id -> {q, thread_id, done}
+_jobs_lock = threading.Lock()
+
+def _get_job_by_thread():
+    tid = threading.current_thread().ident
+    with _jobs_lock:
+        for job in _jobs.values():
+            if job.get('thread_id') == tid:
+                return job
+    return None
+
+def _job_put(job, event_type, data):
+    if job:
+        job['q'].put((event_type, data))
+
+def _parse_progress_from_line(job, line):
+    """从 RKNN tqdm / logger 行解析进度百分比并推送"""
+    if not line:
+        return
+    # tqdm 格式: "I Quantizating :  24%|████..."
+    if ('%|' in line or '% |' in line) and re.search(r'\d+%', line):
+        pct_m = re.search(r'(\d+)%', line)
+        if pct_m:
+            pct = int(pct_m.group(1))
+            if 'Quantizat' in line:
+                overall = 37 + int(pct * 0.46)   # 37-83%
+                _job_put(job, 'progress', overall)
+            elif 'GraphPreparing' in line:
+                _job_put(job, 'progress', 30 + int(pct * 0.05))
+    # 关键文字进度节点
+    elif 'rknnopt' in line and '导出完成' in line:
+        _job_put(job, 'progress', 18)
+    elif 'load_pytorch' in line or 'load_onnx' in line or '加载 torchscript' in line or '加载 ONNX' in line:
+        _job_put(job, 'progress', 22)
+    elif '构建 RKNN' in line or 'building' in line.lower():
+        if 'done' in line.lower() or '完成' in line:
+            _job_put(job, 'progress', 86)
+        else:
+            _job_put(job, 'progress', 28)
+    elif 'export_rknn' in line or '导出：' in line:
+        _job_put(job, 'progress', 90)
+    elif '完成 ✓' in line or 'RKNN 成功' in line:
+        _job_put(job, 'progress', 95)
+
+class _TeeWriter:
+    """将 stderr/stdout 写入同时推送到当前线程对应的 job queue"""
+    def __init__(self, orig):
+        self._orig = orig
+    def write(self, s):
+        self._orig.write(s)
+        if not s or s.isspace():
+            return
+        job = _get_job_by_thread()
+        if job:
+            lines = re.sub(r'\r', '\n', s).split('\n')
+            for line in lines:
+                line = line.strip()
+                if line:
+                    job['q'].put(('log', line))
+                    _parse_progress_from_line(job, line)
+    def flush(self):
+        self._orig.flush()
+    def fileno(self):
+        try: return self._orig.fileno()
+        except: return -1
+    def isatty(self):
+        return False
+
+class _QueueLogHandler(logging.Handler):
+    """将 Python logger 消息推送到当前线程对应的 job queue"""
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            job = _get_job_by_thread()
+            if job:
+                job['q'].put(('log', msg))
+                _parse_progress_from_line(job, msg)
+        except Exception:
+            pass
+
+# 安装全局拦截器（只安装一次）
+_orig_stderr = sys.stderr
+sys.stderr = _TeeWriter(_orig_stderr)
+_queue_handler = _QueueLogHandler()
+_queue_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+logging.getLogger().addHandler(_queue_handler)
+# ──────────────────────────────────────────────────────────
+
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
@@ -96,95 +193,137 @@ def get_platforms():
 
 @app.route('/api/convert', methods=['POST'])
 def convert_model():
-    """处理模型转换请求"""
-    upload_path = None
-    try:
-        if 'model_file' not in request.files:
-            return jsonify({'success': False, 'message': '未上传模型文件'}), 400
+    """处理模型转换请求（异步，返回 job_id）"""
+    if 'model_file' not in request.files:
+        return jsonify({'success': False, 'message': '未上传模型文件'}), 400
+    file = request.files['model_file']
+    if file.filename == '':
+        return jsonify({'success': False, 'message': '未选择文件'}), 400
+    if not allowed_file(file.filename):
+        return jsonify({'success': False, 'message': '只支持 .pt / .pth / .onnx 文件'}), 400
 
-        file = request.files['model_file']
-        if file.filename == '':
-            return jsonify({'success': False, 'message': '未选择文件'}), 400
+    model_type   = request.form.get('model_type', 'yolov8_det')
+    platform     = request.form.get('platform', 'rk3576')
+    quant_type   = request.form.get('quant_type', 'i8')
+    input_width  = int(request.form.get('input_width', 640))
+    input_height = int(request.form.get('input_height', 640))
 
-        if not allowed_file(file.filename):
-            return jsonify({'success': False, 'message': '只支持 .pt / .pth / .onnx 文件'}), 400
+    ok, msg = validate_file_ext(model_type, file.filename)
+    if not ok:
+        return jsonify({'success': False, 'message': msg}), 400
 
-        # 获取参数
-        model_type = request.form.get('model_type', 'yolov8_det')
-        platform   = request.form.get('platform', 'rk3576')
-        quant_type = request.form.get('quant_type', 'i8')
-        input_width  = int(request.form.get('input_width', 640))
-        input_height = int(request.form.get('input_height', 640))
+    filename  = secure_filename(file.filename)
+    timestamp = int(time.time())
+    upload_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{timestamp}_{filename}")
+    file.save(upload_path)
 
-        # 快速扩展名校验
-        ok, msg = validate_file_ext(model_type, file.filename)
-        if not ok:
-            return jsonify({'success': False, 'message': msg}), 400
+    model_name      = os.path.splitext(filename)[0]
+    output_filename = f"{model_name}_{model_type}_{platform}_{quant_type}_{timestamp}.rknn"
+    output_path     = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
+    do_quant        = (quant_type == 'i8')
 
-        # 保存上传文件
-        filename = secure_filename(file.filename)
-        timestamp = int(time.time())
-        upload_path = os.path.join(app.config['UPLOAD_FOLDER'],
-                                    f"{timestamp}_{filename}")
-        file.save(upload_path)
+    job_id = uuid.uuid4().hex[:10]
+    job = {'q': queue.Queue(), 'thread_id': None, 'done': False}
+    with _jobs_lock:
+        _jobs[job_id] = job
 
-        # 设置输出路径
-        model_name = os.path.splitext(filename)[0]
-        output_filename = f"{model_name}_{model_type}_{platform}_{quant_type}_{timestamp}.rknn"
-        output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
+    def _run():
+        job['thread_id'] = threading.current_thread().ident
+        job['q'].put(('progress', 5))
+        job['q'].put(('log', f'▶ 开始转换：{filename} → {output_filename}'))
+        try:
+            converter = UniversalConverter(verbose=True)
+            success, message, onnx_out = converter.convert(
+                model_type=model_type,
+                input_path=upload_path,
+                platform=platform,
+                do_quant=do_quant,
+                calibration_dir=app.config['CALIBRATION_FOLDER'],
+                output_path=output_path,
+                input_size=(input_height, input_width),
+            )
+            if success:
+                # rknnopt 路径不产生 ONNX，补充导出供 x86 模拟推理使用
+                if not onnx_out and upload_path.lower().endswith(('.pt', '.pth')):
+                    job['q'].put(('log', '▶ 补充导出 ONNX（x86 模拟推理用）...'))
+                    _ok, _msg, _onnx = pt_to_onnx(
+                        pt_path=upload_path,
+                        input_size=(input_height, input_width),
+                        tmp_dir=app.config['OUTPUT_FOLDER'],
+                    )
+                    if _ok:
+                        onnx_out = _onnx
+                        job['q'].put(('log', f'✔ ONNX 已生成：{_onnx}'))
+                    else:
+                        job['q'].put(('log', f'⚠ ONNX 生成失败（{_msg}），x86 推理不可用'))
+                cfg = MODEL_REGISTRY[model_type]
+                meta = {
+                    'model_type': model_type,
+                    'input_w': input_width, 'input_h': input_height,
+                    'platform': platform, 'quant_type': quant_type,
+                    'class_names': [], 'onnx_path': onnx_out,
+                    'mean_values': cfg['mean_values'], 'std_values': cfg['std_values'],
+                }
+                meta_path = output_path + '.meta.json'
+                try:
+                    with open(meta_path, 'w', encoding='utf-8') as mf:
+                        json.dump(meta, mf, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+                job['q'].put(('progress', 100))
+                job['q'].put(('done', {
+                    'success': True, 'message': message,
+                    'output_file': output_filename,
+                    'download_url': f'/api/download/{output_filename}'
+                }))
+            else:
+                job['q'].put(('done', {'success': False, 'message': message}))
+        except Exception as e:
+            job['q'].put(('done', {'success': False, 'message': f'转换失败: {e}'}))
+        finally:
+            job['done'] = True
+            if os.path.exists(upload_path):
+                try: os.remove(upload_path)
+                except: pass
 
-        # 执行转换
-        do_quant = (quant_type == 'i8')
-        converter = UniversalConverter(verbose=True)
-        success, message, onnx_out = converter.convert(
-            model_type=model_type,
-            input_path=upload_path,
-            platform=platform,
-            do_quant=do_quant,
-            calibration_dir=app.config['CALIBRATION_FOLDER'],
-            output_path=output_path,
-            input_size=(input_height, input_width),
-        )
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({'started': True, 'job_id': job_id})
 
-        if success:
-            # 保存模型元数据，供推理测试使用
-            cfg = MODEL_REGISTRY[model_type]
-            meta = {
-                'model_type': model_type,
-                'input_w': input_width,
-                'input_h': input_height,
-                'platform': platform,
-                'quant_type': quant_type,
-                'class_names': [],
-                'onnx_path': onnx_out,
-                'mean_values': cfg['mean_values'],
-                'std_values': cfg['std_values'],
-            }
-            meta_path = os.path.join(app.config['OUTPUT_FOLDER'],
-                                     output_filename + '.meta.json')
+
+@app.route('/api/convert/log/<job_id>')
+def convert_log(job_id):
+    """SSE 端点：流式推送转换日志和进度"""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if not job:
+        return jsonify({'error': '任务不存在'}), 404
+
+    def generate():
+        while True:
             try:
-                with open(meta_path, 'w', encoding='utf-8') as mf:
-                    json.dump(meta, mf, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-            return jsonify({
-                'success': True,
-                'message': message,
-                'output_file': output_filename,
-                'download_url': f'/api/download/{output_filename}'
-            })
-        else:
-            return jsonify({'success': False, 'message': message}), 500
+                event_type, data = job['q'].get(timeout=25)
+                payload = json.dumps({'type': event_type, 'data': data}, ensure_ascii=False)
+                yield 'data: ' + payload + '\n\n'
+                if event_type == 'done':
+                    break
+            except queue.Empty:
+                # 心跳，防止连接超时
+                yield 'data: ' + json.dumps({'type': 'ping'}) + '\n\n'
+                if job['done']:
+                    break
+        # 任务结束后稍后清理
+        def _cleanup():
+            time.sleep(60)
+            with _jobs_lock:
+                _jobs.pop(job_id, None)
+        threading.Thread(target=_cleanup, daemon=True).start()
 
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'转换失败: {str(e)}'}), 500
-
-    finally:
-        if upload_path and os.path.exists(upload_path):
-            try:
-                os.remove(upload_path)
-            except Exception:
-                pass
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
 
 
 def get_free_port():

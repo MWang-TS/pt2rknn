@@ -89,6 +89,8 @@ select:focus,input:focus{border-color:#667eea}
 .rmsg.error{background:#f8d7da;color:#721c24;border-left:4px solid #dc3545}
 .abtn{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px;display:none}
 .abtn.show{display:flex}
+.conv-log{background:#0f1117;color:#d4d4d4;font-family:'Consolas','Monaco',monospace;font-size:.78em;line-height:1.55;padding:10px 14px;border-radius:8px;max-height:220px;overflow-y:auto;margin-bottom:14px;white-space:pre-wrap;word-break:break-all}
+.conv-log .log-warn{color:#dcdcaa}.conv-log .log-err{color:#f48771}.conv-log .log-ok{color:#4ec9b0}.conv-log .log-info{color:#9cdcfe}
 .dlb{padding:8px 18px;border-radius:8px;font-size:.87em;font-weight:600;text-decoration:none;border:none;cursor:pointer;transition:opacity .2s}
 .dlb:hover{opacity:.85}
 .dlb.green{background:#28a745;color:#fff}
@@ -227,7 +229,16 @@ select:focus,input:focus{border-color:#667eea}
 
   <div class="rmsg" id="rmsg"></div>
   <div class="abtn" id="abtn"></div>
-  <div class="prog" id="prog"><div class="prog-bar"></div></div>
+  <div id="progWrap" style="display:none;margin-bottom:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+      <span id="progLabel" style="font-size:.82em;color:#666">准备中...</span>
+      <span id="progPct" style="font-size:.82em;font-weight:700;color:#667eea">0%</span>
+    </div>
+    <div style="height:8px;background:#f0f0f0;border-radius:4px;overflow:hidden">
+      <div id="progBar" style="height:100%;width:0%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:4px;transition:width .5s ease"></div>
+    </div>
+  </div>
+  <div class="conv-log" id="convLog" style="display:none"></div>
   <button class="btn btn-primary" id="convertBtn" disabled>选择文件后可开始转换</button>
 </div>
 
@@ -452,8 +463,15 @@ async function doConvert() {
   if(!validateOk||!uploadedFile) return;
   hideRmsg();
   document.getElementById('abtn').className='abtn';
-  setBtn(false,'<span class="sp"></span>转换中，请稍候...');
-  document.getElementById('prog').classList.add('active');
+  setBtn(false,'<span class="sp"></span>转换中...');
+
+  const progWrap = document.getElementById('progWrap');
+  const convLog  = document.getElementById('convLog');
+  progWrap.style.display = 'block';
+  convLog.style.display  = 'block';
+  convLog.innerHTML = '';
+  setProgress(0, '建立连接...');
+
   const form = new FormData();
   form.append('model_file', uploadedFile);
   form.append('model_type',   sel);
@@ -461,28 +479,77 @@ async function doConvert() {
   form.append('quant_type',   document.getElementById('quantType').value);
   form.append('input_width',  document.getElementById('inputWidth').value);
   form.append('input_height', document.getElementById('inputHeight').value);
+
+  let jobId = null;
   try {
     const res = await fetch('/api/convert',{method:'POST',body:form});
     const d = await res.json();
-    document.getElementById('prog').classList.remove('active');
-    if(d.success) {
-      showRmsg('success','✅ 转换成功！<br><pre style="font-size:.82em;margin-top:5px;white-space:pre-wrap">'+d.message+'</pre>');
-      const ab=document.getElementById('abtn');
-      ab.className='abtn show';
-      ab.innerHTML=`<a href="${d.download_url}" class="dlb green">⬇️ 下载 RKNN</a>
-        <button class="dlb purple" onclick="previewModel('${d.output_file}')">👁 Netron 预览</button>
-        <button class="dlb orange" onclick="openInferModal('${d.output_file}',${JSON.stringify(selMeta&&selMeta.value||'')},${JSON.stringify(selMeta&&String(selMeta.input_size_default[0])||'640')},${JSON.stringify(selMeta&&String(selMeta.input_size_default[1])||'640')})">🧪 推理测试</button>`;
-      loadHistory();
-    } else {
-      showRmsg('error','❌ 转换失败：<br><pre style="font-size:.82em;margin-top:5px;white-space:pre-wrap">'+d.message+'</pre>');
-    }
+    if(!d.started) throw new Error(d.message||'启动失败');
+    jobId = d.job_id;
+    setProgress(3, '任务已启动...');
   } catch(e) {
-    document.getElementById('prog').classList.remove('active');
-    showRmsg('error','❌ 请求失败：'+e.message);
+    progWrap.style.display='none'; convLog.style.display='none';
+    showRmsg('error','❌ 启动失败：'+e.message);
+    setBtn(true,'🚀 重新转换');
+    return;
   }
-  setBtn(true,'🚀 重新转换');
+
+  const es = new EventSource('/api/convert/log/'+jobId);
+  es.onmessage = (ev) => {
+    let msg; try{ msg=JSON.parse(ev.data); }catch{ return; }
+    if(msg.type==='ping') return;
+    if(msg.type==='log'){
+      appendLog(msg.data);
+    } else if(msg.type==='progress'){
+      setProgress(msg.data, null);
+    } else if(msg.type==='done'){
+      es.close();
+      const d=msg.data;
+      setProgress(d.success?100:0, d.success?'✅ 转换完成':'❌ 失败');
+      if(d.success){
+        showRmsg('success','✅ 转换成功！<br><pre style="font-size:.82em;margin-top:5px;white-space:pre-wrap">'+d.message+'</pre>');
+        const ab=document.getElementById('abtn');
+        ab.className='abtn show';
+        ab.innerHTML=`<a href="${d.download_url}" class="dlb green">⬇️ 下载 RKNN</a>
+          <button class="dlb purple" onclick="previewModel('${d.output_file}')">👁 Netron 预览</button>
+          <button class="dlb orange" onclick="openInferModal('${d.output_file}','${selMeta?selMeta.value:''}','${selMeta?selMeta.input_size_default[0]:640}','${selMeta?selMeta.input_size_default[1]:640}')">🧪 推理测试</button>`;
+        loadHistory();
+      } else {
+        showRmsg('error','❌ 转换失败：<br><pre style="font-size:.82em;margin-top:5px;white-space:pre-wrap">'+d.message+'</pre>');
+      }
+      setBtn(true,'🚀 重新转换');
+    }
+  };
+  es.onerror = () => {
+    if(es.readyState===EventSource.CLOSED) return;
+    es.close();
+    showRmsg('error','❌ SSE 连接中断');
+    setBtn(true,'🚀 重新转换');
+  };
 }
 
+function setProgress(pct, label){
+  const bar=document.getElementById('progBar');
+  const pctEl=document.getElementById('progPct');
+  const lblEl=document.getElementById('progLabel');
+  if(bar)   bar.style.width=pct+'%';
+  if(pctEl) pctEl.textContent=pct+'%';
+  if(label!==null && lblEl) lblEl.textContent=label;
+}
+
+function appendLog(text){
+  const el=document.getElementById('convLog');
+  if(!el) return;
+  const line=document.createElement('div');
+  const esc=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if(/^W[: ]|WARNING|⚠/.test(text)) line.className='log-warn';
+  else if(/^E[: ]|ERROR|失败|error/i.test(text)) line.className='log-err';
+  else if(/成功|完成|✅/.test(text)) line.className='log-ok';
+  else line.className='log-info';
+  line.innerHTML=esc;
+  el.appendChild(line);
+  el.scrollTop=el.scrollHeight;
+}
 // ═══════════════════════════════════════
 // Netron preview
 // ═══════════════════════════════════════
