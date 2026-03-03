@@ -594,20 +594,34 @@ async function deleteFile(filename) {
   if (!confirm(`确定删除 ${filename}？`)) return;
   try {
     const res = await fetch('/api/delete/' + encodeURIComponent(filename), {method: 'DELETE'});
-    const d = await res.json();
-    if (d.success) { loadOutputs(); }
+    const text = await res.text();
+    let d;
+    try { d = JSON.parse(text); }
+    catch(_) {
+      alert('删除失败（HTTP ' + res.status + '，非JSON响应）：\n' + text.slice(0, 300));
+      loadHistory();
+      return;
+    }
+    if (d.success) { loadHistory(); }
     else { alert('删除失败：' + d.message); }
-  } catch(e) { alert('请求失败'); }
+  } catch(e) { alert('请求失败：' + e.message); }
 }
 
 async function clearAllHistory() {
   if (!confirm('确定清空全部转换历史？此操作不可恢复。')) return;
   try {
     const res = await fetch('/api/outputs/clear', {method: 'POST'});
-    const d = await res.json();
-    if (d.success) { loadOutputs(); }
+    const text = await res.text();
+    let d;
+    try { d = JSON.parse(text); }
+    catch(_) {
+      alert('清空失败（HTTP ' + res.status + '，非JSON响应）：\n' + text.slice(0, 300));
+      loadHistory();
+      return;
+    }
+    if (d.success) { loadHistory(); }
     else { alert('清空失败：' + d.message); }
-  } catch(e) { alert('请求失败'); }
+  } catch(e) { alert('请求失败：' + e.message); }
 }
 
 
