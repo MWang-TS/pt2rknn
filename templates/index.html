@@ -233,7 +233,7 @@ select:focus,input:focus{border-color:#667eea}
 
 <!-- 历史 -->
 <div class="card">
-  <div class="card-title" style="margin-bottom:10px">📦 转换历史</div>
+  <div class="card-title" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">📦 转换历史<button class="dlb" style="font-size:.78em;padding:5px 12px;background:#e74c3c;color:#fff;border:none;border-radius:6px;cursor:pointer" onclick="clearAllHistory()">🗑 清空全部</button></div>
   <div id="historyList"><p style="text-align:center;color:#aaa;padding:16px 0">暂无转换记录</p></div>
 </div>
 </div>
@@ -514,12 +514,33 @@ async function loadHistory() {
             <button class="dlb orange" style="font-size:.8em;padding:6px 13px" onclick="openInferModal('${f.filename}','${f.model_type}','${f.input_w}','${f.input_h}')">🧪 测试</button>
             <button class="dlb purple" style="font-size:.8em;padding:6px 13px" onclick="previewModel('${f.filename}')">👁 预览</button>
             <a href="${f.download_url}" class="dlb green" style="font-size:.8em;padding:6px 13px">⬇️ 下载</a>
+            <button class="dlb" style="font-size:.8em;padding:6px 13px;background:#e74c3c;color:#fff;border:none;border-radius:6px;cursor:pointer" onclick="deleteFile('${f.filename}')">🗑 删除</button>
           </div>
         </div>`).join('');
     } else {
       list.innerHTML='<p style="text-align:center;color:#aaa;padding:16px 0">暂无转换记录</p>';
     }
   } catch(e){}
+}
+
+async function deleteFile(filename) {
+  if (!confirm(`确定删除 ${filename}？`)) return;
+  try {
+    const res = await fetch('/api/delete/' + encodeURIComponent(filename), {method: 'DELETE'});
+    const d = await res.json();
+    if (d.success) { loadOutputs(); }
+    else { alert('删除失败：' + d.message); }
+  } catch(e) { alert('请求失败'); }
+}
+
+async function clearAllHistory() {
+  if (!confirm('确定清空全部转换历史？此操作不可恢复。')) return;
+  try {
+    const res = await fetch('/api/outputs/clear', {method: 'POST'});
+    const d = await res.json();
+    if (d.success) { loadOutputs(); }
+    else { alert('清空失败：' + d.message); }
+  } catch(e) { alert('请求失败'); }
 }
 
 

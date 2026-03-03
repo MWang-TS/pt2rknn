@@ -487,6 +487,39 @@ def download_file(filename):
         return jsonify({'success': False, 'message': f'下载失败: {str(e)}'}), 500
 
 
+@app.route('/api/delete/<filename>', methods=['DELETE'])
+def delete_output(filename):
+    """删除单个转换输出文件（.rknn + .meta.json）"""
+    try:
+        output_folder = app.config['OUTPUT_FOLDER']
+        file_path = os.path.join(output_folder, filename)
+        if not os.path.exists(file_path):
+            return jsonify({'success': False, 'message': '文件不存在'}), 404
+        os.remove(file_path)
+        meta_path = file_path + '.meta.json'
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+        return jsonify({'success': True, 'message': f'{filename} 已删除'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'删除失败: {str(e)}'}), 500
+
+
+@app.route('/api/outputs/clear', methods=['POST'])
+def clear_outputs():
+    """清空全部转换历史（output 目录下所有 .rknn 和 .meta.json）"""
+    try:
+        output_folder = app.config['OUTPUT_FOLDER']
+        removed = 0
+        for fname in os.listdir(output_folder):
+            if fname.endswith('.rknn') or fname.endswith('.meta.json'):
+                os.remove(os.path.join(output_folder, fname))
+                removed += 1
+        return jsonify({'success': True, 'message': f'已清空 {removed} 个文件'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'清空失败: {str(e)}'}), 500
+
+
+
 @app.route('/api/outputs', methods=['GET'])
 def list_outputs():
     """列出所有输出文件"""
