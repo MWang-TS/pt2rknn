@@ -1,4 +1,4 @@
-# PT → RKNN 多模型转换工具 🚀
+# PT → RKNN 多模型转换工具 🚀 `v0.0.1`
 
 一个基于 Web 界面的模型转换工具，将 PyTorch (.pt/.pth) 或 ONNX 模型转换为 RKNN 格式，专为 Rockchip NPU 设备优化。
 
@@ -7,10 +7,11 @@
 - 🖥️ **Web 界面** — 三步骤卡片式 UI，无需命令行操作
 - 🤖 **多网络类型** — 支持 YOLOv8-Det / Seg / Pose / OBB、ResNet、RetinaFace
 - 📂 **智能格式识别** — 上传文件后自动校验扩展名与网络类型是否匹配
-- 🔄 **自动转换链路** — PT → ONNX → RKNN，一步完成
+- 🔄 **自动转换链路** — PT → rknnopt TorchScript → RKNN（INT8 量化精度更佳）或 PT → ONNX → RKNN
+- 📡 **实时日志流** — 转换过程通过 SSE 实时推送日志与进度条
 - 📊 **INT8 校准数据集准备** — 指定训练数据路径，工具自动探测格式、提取图片、生成 dataset.txt
 - 👁️ **Netron 预览** — 在线可视化 RKNN / ONNX 模型结构
-- 📦 **历史记录** — 查看并下载所有转换结果
+- 📦 **历史记录** — 查看、推理测试、单条删除或一键清空所有转换结果
 
 ---
 
@@ -150,13 +151,17 @@ cp /your/coco/val2017/*.jpg calibration_data/coco/images/
 |------|------|------|
 | GET  | `/api/model_types` | 获取所有支持的网络类型元数据 |
 | POST | `/api/validate` | 校验上传文件是否匹配网络类型 |
-| POST | `/api/convert` | 执行模型转换 |
+| POST | `/api/convert` | 执行模型转换（返回 job_id）|
+| GET  | `/api/stream/<job_id>` | SSE 实时流式获取转换日志与进度 |
 | GET  | `/api/calibration/status` | 查询指定类型的校准数据状态 |
 | POST | `/api/calibration/detect` | 探测数据集路径格式 |
 | POST | `/api/calibration/prepare` | 提取图片并生成 dataset.txt |
 | POST | `/api/preview` | 启动 Netron 预览服务 |
 | GET  | `/api/outputs` | 获取历史转换文件列表 |
 | GET  | `/api/download/<filename>` | 下载 RKNN 文件 |
+| DELETE | `/api/delete/<filename>` | 删除单个 RKNN 及其元数据 |
+| POST | `/api/outputs/clear` | 清空全部转换历史 |
+| POST | `/api/infer` | 在服务端（x86 模拟器）执行推理测试 |
 
 ---
 
@@ -169,7 +174,20 @@ cp /your/coco/val2017/*.jpg calibration_data/coco/images/
 
 ---
 
-## 🔗 相关资源
+## � 版本历史
+
+### v0.0.1 (2026-03-03)
+
+- 初始发布
+- YOLOv8-Det INT8 量化采用 rknnopt TorchScript 路径（`load_pytorch`），解决各输出头共用同一 INT8 scale 导致分类分数全零的问题
+- 转换过程 SSE 实时日志流 + 进度条
+- 历史记录支持单条删除和一键清空
+- 推理测试修复：rknnopt 转换后自动生成 ONNX 供 x86 模拟器使用
+- 设备端推理脚本 (`infer_on_device.py`) 支持 rknnopt 6-output 格式，DFL 改为纯 NumPy 实现
+
+---
+
+## �🔗 相关资源
 
 - [Rockchip RKNN Model Zoo](https://github.com/airockchip/rknn_model_zoo)
 - [rknn-toolkit2 文档](https://github.com/airockchip/rknn-toolkit2)
