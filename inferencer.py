@@ -254,12 +254,12 @@ def _postprocess_det_splithead(outputs, orig_bgr, scale, pad_x, pad_y,
         summary_lines.append('  {} {:.3f}  {}'.format(d['class'], d['score'], d['box']))
     return result, '\n'.join(summary_lines), detections
 
-def postprocess_det(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh, class_names):
+def postprocess_det(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh, class_names, input_hw=(640, 640)):
     """YOLOv8-Det: single output [1,4+nc,8400] OR rknn split-head (6 or 9 tensors)"""
     # Auto-detect rknn split-head format
     if len(outputs) > 1:
         return _postprocess_det_splithead(outputs, orig_bgr, scale, pad_x, pad_y,
-                                          conf_thresh, iou_thresh, class_names)
+                                          conf_thresh, iou_thresh, class_names, input_hw)
 
     result = orig_bgr.copy()
     h, w = orig_bgr.shape[:2]
@@ -315,49 +315,126 @@ def postprocess_det(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thr
     return result, '\n'.join(summary_lines), detections
 
 
-def postprocess_seg(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh, class_names):
-    """YOLOv8-Seg: outputs[0]=[1,4+nc+32,8400], outputs[1]=[1,32,160,160]
-    简化处理：只绘制检测框，不渲染掩码（掩码解码需要额外内存）"""
-    # 用 det 后处理处理主输出（忽略掩码 proto 输出）
-    main_out = outputs[0]
-    raw = main_out[0] if main_out.ndim == 3 else main_out
-    raw = raw if raw.shape[0] > raw.shape[1] else raw.T  # [8400, 4+nc+32]
-    # 剔除末尾32维掩码系数
-    nc = raw.shape[1] - 4 - 32
-    # 只取 det 部分
-    raw_det = np.concatenate([raw[:, :4], raw[:, 4:4+nc]], axis=1)
-    det_output = raw_det[np.newaxis]  # [1, 4+nc, 8400]... actually just pass it
-    # Re-use det postprocess with synthetic single output
-    return postprocess_det([raw_det.T[np.newaxis] if False else np.expand_dims(raw_det.T, 0)],
-                            orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh, class_names)
+def _render_masks(result, boxes_orig, seg_maps, class_ids, class_scores,
+                   class_names, orig_h, orig_w):
+    """在 result 上叠加掩码并绘制框标签，返回更新后的 result 和 detections 列表。"""
+    detections = []
+    for i, (box, cid, score) in enumerate(zip(boxes_orig, class_ids, class_scores)):
+        x1o, y1o, x2o, y2o = [int(v) for v in box]
+        name = (class_names[int(cid)] if class_names and int(cid) < len(class_names)
+                else 'cls{}'.format(int(cid)))
+        color = _color(int(cid))
+        cv2.rectangle(result, (x1o, y1o), (x2o, y2o), color, 2)
+        label = '{} {:.2f}'.format(name, float(score))
+        (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        cv2.rectangle(result, (x1o, y1o - lh - 6), (x1o + lw, y1o), color, -1)
+        cv2.putText(result, label, (x1o, y1o - 4), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (255, 255, 255), 1)
+        if seg_maps is not None and i < len(seg_maps):
+            mask_map = seg_maps[i]  # (ph, pw)
+            mask_rs = cv2.resize(mask_map, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+            box_mask = np.zeros((orig_h, orig_w), dtype=np.float32)
+            y1c, y2c = max(0, y1o), min(orig_h, y2o)
+            x1c, x2c = max(0, x1o), min(orig_w, x2o)
+            box_mask[y1c:y2c, x1c:x2c] = mask_rs[y1c:y2c, x1c:x2c]
+            seg_bin = (box_mask > 0.5).astype(np.uint8)
+            color_mask = np.zeros_like(result, dtype=np.uint8)
+            color_mask[seg_bin == 1] = color
+            result = cv2.addWeighted(result, 1.0, color_mask, 0.4, 0)
+        detections.append({'class': name, 'score': round(float(score), 3),
+                           'box': [x1o, y1o, x2o, y2o]})
+    return result, detections
 
 
-def postprocess_pose(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh):
-    """YOLOv8-Pose: output [1, 56, 8400]  (4 box +1 cls +51 kpts)"""
-    SKELETON = [(0,1),(0,2),(1,3),(2,4),(5,6),(5,7),(7,9),(6,8),(8,10),
-                (5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16)]
-    KPT_COLOR = [(0,255,0)] * 17
+def _compute_seg_masks(mask_coeffs, proto):
+    """mask_coeffs: (N, 32)  proto: (32, ph, pw) → seg_maps (N, ph, pw) sigmoid"""
+    n_mask, ph, pw = proto.shape
+    proto_flat = proto.reshape(n_mask, -1)           # (32, ph*pw)
+    seg_logits = mask_coeffs @ proto_flat             # (N, ph*pw)
+    seg_probs  = 1.0 / (1.0 + np.exp(-seg_logits))  # (N, ph*pw)
+    return seg_probs.reshape(-1, ph, pw)              # (N, ph, pw)
 
+
+def postprocess_seg(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh,
+                    class_names, input_hw=(640, 640)):
+    """YOLOv8-Seg:
+      ONNX:       2 outputs [1,4+nc+32,8400] + [1,32,ph,pw]
+      RKNN split-head: 13 outputs (4 per scale × 3 + proto)
+    """
     result = orig_bgr.copy()
-    h, w = orig_bgr.shape[:2]
+    orig_h, orig_w = orig_bgr.shape[:2]
     summary_lines = []
 
-    raw = outputs[0]
-    if raw.ndim == 3:
-        raw = raw[0]
-    pred = raw if raw.shape[0] > raw.shape[1] else raw.T  # [8400, 56]
+    # ── Split-head (rknnopt, ≥10 outputs) ──────────────────────────────────
+    if len(outputs) >= 10:
+        proto = outputs[-1]
+        if proto.ndim == 4:
+            proto = proto[0]
+        elif proto.ndim == 2:
+            proto = proto[np.newaxis]
+        n_mask, ph, pw = proto.shape
 
-    boxes_cxcywh = pred[:, :4]
-    scores = 1 / (1 + np.exp(-pred[:, 4]))   # sigmoid person score
-    kpts = pred[:, 5:]                           # [8400, 51]
+        pair = len(outputs) // 3   # = 4
+        all_xyxy, all_cls_ids, all_scores, all_mc = [], [], [], []
 
-    mask = scores >= conf_thresh
-    boxes_cxcywh = boxes_cxcywh[mask]
-    scores_f = scores[mask]
-    kpts_f = kpts[mask]
+        for i in range(3):
+            box_raw  = outputs[i * pair]       # (64, H, W)
+            cls_raw  = outputs[i * pair + 1]   # (nc, H, W)
+            mask_raw = outputs[i * pair + 3]   # (32, H, W)
+
+            if box_raw.ndim == 4: box_raw  = box_raw[0]
+            if cls_raw.ndim  == 4: cls_raw  = cls_raw[0]
+            elif cls_raw.ndim == 2: cls_raw = cls_raw[np.newaxis]
+            if mask_raw.ndim == 4: mask_raw = mask_raw[0]
+
+            xyxy = _box_process_splithead(box_raw[np.newaxis], input_hw)  # (1,4,H,W)
+            xyxy_flat = xyxy[0].reshape(4, -1).T          # (H*W, 4)
+            nc = cls_raw.shape[0]
+            cls_flat   = cls_raw.reshape(nc, -1).T        # (H*W, nc)
+            cls_ids    = np.argmax(cls_flat, axis=1)
+            cls_scores = cls_flat[np.arange(len(cls_flat)), cls_ids]
+            mask_flat  = mask_raw.reshape(n_mask, -1).T   # (H*W, 32)
+
+            m = cls_scores >= conf_thresh
+            if m.sum() > 0:
+                all_xyxy.append(xyxy_flat[m]);      all_cls_ids.append(cls_ids[m])
+                all_scores.append(cls_scores[m]);   all_mc.append(mask_flat[m])
+
+        if not all_xyxy:
+            summary_lines.append('未检测到目标（置信度阈值 {:.2f}）'.format(conf_thresh))
+            return result, '\n'.join(summary_lines), []
+
+        boxes_xyxy  = np.concatenate(all_xyxy)
+        class_ids   = np.concatenate(all_cls_ids)
+        class_scores = np.concatenate(all_scores)
+        mask_coeffs = np.concatenate(all_mc)
+
+        keep_all = []
+        for cid in np.unique(class_ids):
+            idx = np.where(class_ids == cid)[0]
+            keep_all.extend(idx[nms(boxes_xyxy[idx], class_scores[idx], iou_thresh)].tolist())
+
+        boxes_xyxy   = boxes_xyxy[keep_all];    class_ids    = class_ids[keep_all]
+        class_scores = class_scores[keep_all];  mask_coeffs  = mask_coeffs[keep_all]
+        boxes_orig   = restore_boxes(boxes_xyxy, scale, pad_x, pad_y, orig_w, orig_h)
+        seg_maps     = _compute_seg_masks(mask_coeffs, proto)
+        result, detections = _render_masks(result, boxes_orig, seg_maps, class_ids,
+                                           class_scores, class_names, orig_h, orig_w)
+        summary_lines.append('检测到 {} 个目标（split-head + 掩码）'.format(len(detections)))
+        for d in detections:
+            summary_lines.append('  {} {:.3f}  {}'.format(d['class'], d['score'], d['box']))
+        return result, '\n'.join(summary_lines), detections
+
+    # ── ONNX single-tensor (2 outputs) ─────────────────────────────────────
+    main_out = outputs[0]
+    raw = main_out[0] if main_out.ndim == 3 else main_out
+    raw = raw if raw.shape[0] > raw.shape[1] else raw.T   # (8400, 4+nc+32)
+
+    boxes_cxcywh, cids, cscores, mask_coeffs = _decode_yolo_common(
+        raw, conf_thresh, iou_thresh, num_extra=32)
 
     if len(boxes_cxcywh) == 0:
-        summary_lines.append('未检测到人体（置信度阈值 {:.2f}）'.format(conf_thresh))
+        summary_lines.append('未检测到目标（置信度阈值 {:.2f}）'.format(conf_thresh))
         return result, '\n'.join(summary_lines), []
 
     x1 = boxes_cxcywh[:, 0] - boxes_cxcywh[:, 2] / 2
@@ -366,50 +443,224 @@ def postprocess_pose(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_th
     y2 = boxes_cxcywh[:, 1] + boxes_cxcywh[:, 3] / 2
     boxes_xyxy = np.stack([x1, y1, x2, y2], axis=1)
 
-    keep = nms(boxes_xyxy, scores_f, iou_thresh)
-    boxes_xyxy = boxes_xyxy[keep]
-    scores_f = scores_f[keep]
-    kpts_f = kpts_f[keep]
+    keep_all = []
+    for cid in np.unique(cids):
+        idx = np.where(cids == cid)[0]
+        keep_all.extend(idx[nms(boxes_xyxy[idx], cscores[idx], iou_thresh)].tolist())
 
-    boxes_orig = restore_boxes(boxes_xyxy, scale, pad_x, pad_y, w, h)
+    boxes_xyxy   = boxes_xyxy[keep_all];    cids         = cids[keep_all]
+    cscores      = cscores[keep_all];       mask_coeffs  = mask_coeffs[keep_all]
+    boxes_orig   = restore_boxes(boxes_xyxy, scale, pad_x, pad_y, orig_w, orig_h)
 
+    seg_maps = None
+    if len(outputs) >= 2:
+        proto = outputs[1]
+        if proto.ndim == 4: proto = proto[0]
+        seg_maps = _compute_seg_masks(mask_coeffs, proto)
+
+    task_desc = '（含掩码）' if seg_maps is not None else '（仅边框）'
+    result, detections = _render_masks(result, boxes_orig, seg_maps, cids,
+                                       cscores, class_names, orig_h, orig_w)
+    summary_lines.append('检测到 {} 个目标{}'.format(len(detections), task_desc))
+    for d in detections:
+        summary_lines.append('  {} {:.3f}  {}'.format(d['class'], d['score'], d['box']))
+    return result, '\n'.join(summary_lines), detections
+
+
+def _draw_pose(result, boxes_orig, scores_f, kpts_flat, scale, pad_x, pad_y):
+    """Draw keypoints and skeleton onto result image, return detections list."""
+    SKELETON = [(0,1),(0,2),(1,3),(2,4),(5,6),(5,7),(7,9),(6,8),(8,10),
+                (5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16)]
     detections = []
-    for i, (box, score, kpt) in enumerate(zip(boxes_orig, scores_f, kpts_f)):
+    for box, score, kpt in zip(boxes_orig, scores_f, kpts_flat):
         x1o, y1o, x2o, y2o = [int(v) for v in box]
         cv2.rectangle(result, (x1o, y1o), (x2o, y2o), (0, 255, 0), 2)
         label = 'person {:.2f}'.format(float(score))
         cv2.putText(result, label, (x1o, y1o - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
-        # draw keypoints
-        kpt_xy = kpt.reshape(17, 3)  # (x, y, conf)
+        kpt_xy = kpt.reshape(17, 3)
         kpt_pts = []
         for k in range(17):
             kx, ky, kc = kpt_xy[k]
-            # restore from letterbox space to original
             kx_r = (kx - pad_x) / scale
             ky_r = (ky - pad_y) / scale
             kpt_pts.append((int(kx_r), int(ky_r)))
             if kc > 0.3:
-                cv2.circle(result, (int(kx_r), int(ky_r)), 4, KPT_COLOR[k], -1)
-
+                cv2.circle(result, (int(kx_r), int(ky_r)), 4, (0, 255, 0), -1)
         for a, b in SKELETON:
             if kpt_xy[a][2] > 0.3 and kpt_xy[b][2] > 0.3:
                 cv2.line(result, kpt_pts[a], kpt_pts[b], (0, 180, 255), 2)
-
         detections.append({'score': round(float(score), 3), 'box': [x1o, y1o, x2o, y2o]})
-
-    summary_lines.append('检测到 {} 个人体姿态'.format(len(detections)))
-    return result, '\n'.join(summary_lines), detections
+    return detections
 
 
-def postprocess_obb(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh, class_names):
-    """YOLOv8-OBB: output [1, 4+nc+1, 8400] (cx,cy,w,h + classes + angle)"""
-    import math
-
+def postprocess_pose(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh,
+                     input_hw=(640, 640)):
+    """YOLOv8-Pose:
+      ONNX:       1 output  [1, 56, 8400]  (4 box +1 cls +51 kpts, cxcywh space)
+      RKNN split-head: 4 outputs
+        outputs[0..2]: (65, H, W) = DFL-64 + cls-1 combined, per scale
+        outputs[3]:    (51, 8400) = all keypoints, concatenated across scales
+    """
     result = orig_bgr.copy()
     h, w = orig_bgr.shape[:2]
     summary_lines = []
 
+    # ── Split-head (4 outputs) ──────────────────────────────────────────────
+    if len(outputs) == 4:
+        kpts_tensor = outputs[3]   # (51, 8400) or (1, 51, 8400)
+        if kpts_tensor.ndim == 3:
+            kpts_tensor = kpts_tensor[0]  # (51, 8400)
+        if kpts_tensor.ndim == 1:
+            kpts_tensor = kpts_tensor.reshape(51, -1)
+
+        all_xyxy, all_scores, all_kpt_idx = [], [], []
+        anchor_offset = 0
+        for i in range(3):
+            feat = outputs[i]        # (65, H, W) or (1, 65, H, W)
+            if feat.ndim == 4: feat = feat[0]
+            grid_h, grid_w = feat.shape[1], feat.shape[2]
+            box_4d = feat[:64][np.newaxis]              # (1, 64, H, W)
+            cls_flat = feat[64:].reshape(-1)            # (H*W,) - person scores
+            xyxy = _box_process_splithead(box_4d, input_hw)
+            xyxy_flat = xyxy[0].reshape(4, -1).T        # (H*W, 4)
+            m = cls_flat >= conf_thresh
+            if m.sum() > 0:
+                all_xyxy.append(xyxy_flat[m])
+                all_scores.append(cls_flat[m])
+                all_kpt_idx.extend((anchor_offset + np.where(m)[0]).tolist())
+            anchor_offset += grid_h * grid_w
+
+        if not all_xyxy:
+            summary_lines.append('未检测到人体（置信度阈值 {:.2f}）'.format(conf_thresh))
+            return result, '\n'.join(summary_lines), []
+
+        boxes_xyxy = np.concatenate(all_xyxy)
+        scores_f   = np.concatenate(all_scores)
+        kpt_indices = np.array(all_kpt_idx, dtype=np.int64)
+        keep       = nms(boxes_xyxy, scores_f, iou_thresh)
+        boxes_xyxy = boxes_xyxy[keep];  scores_f = scores_f[keep]
+        kpt_indices = kpt_indices[keep]
+
+        boxes_orig = restore_boxes(boxes_xyxy, scale, pad_x, pad_y, w, h)
+        n_kpt_total = kpts_tensor.shape[1]
+        kpts_flat = []
+        for kidx in kpt_indices:
+            if kidx < n_kpt_total:
+                kpts_flat.append(kpts_tensor[:, kidx])  # (51,)
+            else:
+                kpts_flat.append(np.zeros(51, dtype=np.float32))
+        kpts_flat = np.stack(kpts_flat) if kpts_flat else np.zeros((0, 51))
+
+        detections = _draw_pose(result, boxes_orig, scores_f, kpts_flat, scale, pad_x, pad_y)
+        summary_lines.append('检测到 {} 个人体姿态（split-head）'.format(len(detections)))
+        return result, '\n'.join(summary_lines), detections
+
+    # ── ONNX single-tensor [1, 56, 8400] ────────────────────────────────────
+    raw = outputs[0]
+    if raw.ndim == 3: raw = raw[0]
+    pred = raw if raw.shape[0] > raw.shape[1] else raw.T  # (8400, 56)
+
+    boxes_cxcywh = pred[:, :4]
+    scores = 1.0 / (1.0 + np.exp(-pred[:, 4]))  # sigmoid
+    kpts   = pred[:, 5:]                          # (8400, 51)
+    m = scores >= conf_thresh
+    boxes_cxcywh = boxes_cxcywh[m];  scores_f = scores[m];  kpts_f = kpts[m]
+
+    if len(boxes_cxcywh) == 0:
+        summary_lines.append('未检测到人体（置信度阈值 {:.2f}）'.format(conf_thresh))
+        return result, '\n'.join(summary_lines), []
+
+    x1 = boxes_cxcywh[:,0] - boxes_cxcywh[:,2] / 2
+    y1 = boxes_cxcywh[:,1] - boxes_cxcywh[:,3] / 2
+    x2 = boxes_cxcywh[:,0] + boxes_cxcywh[:,2] / 2
+    y2 = boxes_cxcywh[:,1] + boxes_cxcywh[:,3] / 2
+    boxes_xyxy = np.stack([x1, y1, x2, y2], axis=1)
+    keep = nms(boxes_xyxy, scores_f, iou_thresh)
+    boxes_xyxy = boxes_xyxy[keep];  scores_f = scores_f[keep];  kpts_f = kpts_f[keep]
+    boxes_orig = restore_boxes(boxes_xyxy, scale, pad_x, pad_y, w, h)
+
+    detections = _draw_pose(result, boxes_orig, scores_f, kpts_f, scale, pad_x, pad_y)
+    summary_lines.append('检测到 {} 个人体姿态'.format(len(detections)))
+    return result, '\n'.join(summary_lines), detections
+
+
+def postprocess_obb(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh, class_names, input_hw=(640, 640)):
+    """YOLOv8-OBB:
+      ONNX:       1 output [1, 4+nc+1, 8400] (cxcywh + classes + angle)
+      RKNN split-head: 4 outputs
+        outputs[0..2]: (64+nc, H, W) DFL+cls combined, per scale
+        outputs[3]:    angle tensor, reshaped to (8400,)
+    """
+    import math
+
+    result = orig_bgr.copy()
+    orig_h, orig_w = orig_bgr.shape[:2]
+    h, w = orig_h, orig_w
+    summary_lines = []
+
+    # ── Split-head (4 outputs) ──────────────────────────────────────────
+    if len(outputs) == 4:
+        angles_all = outputs[3].reshape(-1)  # (8400,)
+        all_xyxy, all_cids, all_scores, all_angles = [], [], [], []
+        anchor_offset = 0
+        for i in range(3):
+            feat = outputs[i]
+            if feat.ndim == 4: feat = feat[0]
+            nc_feat = feat.shape[0] - 64
+            grid_h, grid_w = feat.shape[1], feat.shape[2]
+            box_4d = feat[:64][np.newaxis]
+            xyxy   = _box_process_splithead(box_4d, input_hw)
+            xyxy_flat = xyxy[0].reshape(4, -1).T          # (H*W, 4)
+            cls_flat  = feat[64:].reshape(nc_feat, -1).T  # (H*W, nc)
+            cids_i  = np.argmax(cls_flat, axis=1)
+            scores_i = cls_flat[np.arange(len(cls_flat)), cids_i]
+            m = scores_i >= conf_thresh
+            if m.sum() > 0:
+                anchor_idx = anchor_offset + np.where(m)[0]
+                raw_a = angles_all[anchor_idx] if anchor_idx.max() < len(angles_all) else np.zeros(m.sum())
+                angles_rad = (raw_a - 0.25) * np.pi
+                all_xyxy.append(xyxy_flat[m]);     all_cids.append(cids_i[m])
+                all_scores.append(scores_i[m]);    all_angles.append(angles_rad)
+            anchor_offset += grid_h * grid_w
+
+        if not all_xyxy:
+            summary_lines.append('未检测到目标（置信度阈值 {:.2f}）'.format(conf_thresh))
+            return result, '\n'.join(summary_lines), []
+
+        boxes_xyxy   = np.concatenate(all_xyxy)
+        class_ids_sh = np.concatenate(all_cids)
+        class_scores_sh = np.concatenate(all_scores)
+        angles_sh    = np.concatenate(all_angles)
+
+        keep_all = []
+        for cid in np.unique(class_ids_sh):
+            idx = np.where(class_ids_sh == cid)[0]
+            keep_all.extend(idx[nms(boxes_xyxy[idx], class_scores_sh[idx], iou_thresh)].tolist())
+        boxes_xyxy = boxes_xyxy[keep_all];  class_ids_sh = class_ids_sh[keep_all]
+        class_scores_sh = class_scores_sh[keep_all];  angles_sh = angles_sh[keep_all]
+
+        detections = []
+        for xyxy_, cid, score, angle in zip(boxes_xyxy, class_ids_sh, class_scores_sh, angles_sh):
+            cx = (xyxy_[0] + xyxy_[2]) / 2;  cy = (xyxy_[1] + xyxy_[3]) / 2
+            bw_ = xyxy_[2] - xyxy_[0];       bh_ = xyxy_[3] - xyxy_[1]
+            cx_r = (cx - pad_x) / scale;  cy_r = (cy - pad_y) / scale
+            bw_r = bw_ / scale;            bh_r = bh_ / scale
+            name = (class_names[int(cid)] if class_names and int(cid) < len(class_names)
+                    else 'cls{}'.format(int(cid)))
+            color = _color(int(cid))
+            rect = ((cx_r, cy_r), (bw_r, bh_r), math.degrees(float(angle)))
+            pts = cv2.boxPoints(rect).astype(np.int32)
+            cv2.drawContours(result, [pts], 0, color, 2)
+            label = '{} {:.2f}'.format(name, float(score))
+            cv2.putText(result, label, (int(cx_r), int(cy_r)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            detections.append({'class': name, 'score': round(float(score), 3),
+                               'angle_deg': round(math.degrees(float(angle)), 1)})
+        summary_lines.append('检测到 {} 个旋转框目标（split-head）'.format(len(detections)))
+        for d in detections:
+            summary_lines.append('  {} {:.3f}  angle={:.1f}°'.format(d['class'], d['score'], d['angle_deg']))
+        return result, '\n'.join(summary_lines), detections
+
+    # ── ONNX single-tensor ──────────────────────────────────────────────
     raw = outputs[0]
     if raw.ndim == 3:
         raw = raw[0]
@@ -654,23 +905,20 @@ def run_inference(rknn_path, img_bgr, model_type, input_w, input_h,
     if outputs is None or len(outputs) == 0:
         raise RuntimeError('inference() 返回空结果')
 
-    # DEBUG: log actual output shapes
-    logger.info('[DEBUG] 推理输出 %d 个张量，shapes: %s',
-                len(outputs), [o.shape for o in outputs])
-
     # 后处理分发
+    input_hw = (input_h, input_w)
     if model_type == 'yolov8_det':
         result, summary, dets = postprocess_det(outputs, img_bgr, scale, pad_x, pad_y,
-                                                 conf_thresh, iou_thresh, class_names)
+                                                 conf_thresh, iou_thresh, class_names, input_hw)
     elif model_type == 'yolov8_seg':
         result, summary, dets = postprocess_seg(outputs, img_bgr, scale, pad_x, pad_y,
-                                                  conf_thresh, iou_thresh, class_names)
+                                                  conf_thresh, iou_thresh, class_names, input_hw)
     elif model_type == 'yolov8_pose':
         result, summary, dets = postprocess_pose(outputs, img_bgr, scale, pad_x, pad_y,
-                                                   conf_thresh, iou_thresh)
+                                                   conf_thresh, iou_thresh, input_hw)
     elif model_type == 'yolov8_obb':
         result, summary, dets = postprocess_obb(outputs, img_bgr, scale, pad_x, pad_y,
-                                                  conf_thresh, iou_thresh, class_names)
+                                                  conf_thresh, iou_thresh, class_names, input_hw)
     elif model_type == 'resnet':
         result, summary, dets = postprocess_resnet(outputs, img_bgr, class_names)
     elif model_type == 'retinaface':

@@ -176,7 +176,7 @@ cp /your/coco/val2017/*.jpg calibration_data/coco/images/
 
 ## � 版本历史
 
-### v0.0.2 (2026-04-12)
+### v0.0.3 (2026-04-12)
 
 - 修复推理测试：输入张量补充 batch 维度，消除 RKNN 模拟器 "dims wrong, expect 4" 警告
 - 修复推理后处理：新增 `_squeeze_batch` 自动剥除模拟器多出的 batch singleton 维度，解决 "5 were indexed on 4D array" 错误
@@ -202,3 +202,20 @@ cp /your/coco/val2017/*.jpg calibration_data/coco/images/
 - [rknn-toolkit2 文档](https://github.com/airockchip/rknn-toolkit2)
 - [Ultralytics YOLOv8](https://docs.ultralytics.com)
 - [Netron 模型可视化](https://netron.app)
+
+## v0.0.3 (2025-07-12)
+
+### 新增功能
+- **Seg split-head 支持**：正确处理 rknnopt 导出的 13 输出格式（4×3 scale + proto），实现掩码渲染（双线性插值 + sigmoid 叠加）
+- **Pose split-head 支持**：正确处理 4 输出格式（3 scale × combined DFL+cls + 全锚点 kpts 张量），关键点从锚点偏移索引中提取
+- **OBB split-head 支持**：正确处理 4 输出格式（3 scale × combined DFL+cls + 角度张量），旋转框用 cv2.boxPoints 渲染
+- **input_hw 全链路传递**：推理实际分辨率现在正确传给所有 split-head 解码器（不再硬编码 640×640）
+
+### 修复
+- 移除残留 `[DEBUG]` 推理输出日志
+- Seg ONNX 单输出路径重写：使用 `_decode_yolo_common(num_extra=32)` 提取掩码系数，实现真正的掩码叠加渲染
+
+### 新增辅助函数
+- `_render_masks()` - 统一掩码叠加 + 标签绘制
+- `_compute_seg_masks()` - 掩码系数 × proto → sigmoid 掩码图
+- `_draw_pose()` - 关键点 + 骨架渲染（复用于 ONNX/split-head 两路径）
