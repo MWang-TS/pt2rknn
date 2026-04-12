@@ -701,6 +701,6 @@ def list_outputs():
 if __name__ == '__main__':
     print("=" * 60)
     print("PT to RKNN 转换工具已启动")
-    print("访问地址: http://localhost:5000")
+    print("访问地址: http://localhost:5600")
     print("=" * 60)
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5600, debug=True)

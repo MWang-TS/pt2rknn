@@ -1,4 +1,4 @@
-# PT → RKNN 多模型转换工具 🚀 `v0.0.1`
+# PT → RKNN 多模型转换工具 🚀 `v0.0.2`
 
 一个基于 Web 界面的模型转换工具，将 PyTorch (.pt/.pth) 或 ONNX 模型转换为 RKNN 格式，专为 Rockchip NPU 设备优化。
 
@@ -175,6 +175,15 @@ cp /your/coco/val2017/*.jpg calibration_data/coco/images/
 ---
 
 ## � 版本历史
+
+### v0.0.2 (2026-04-12)
+
+- 修复推理测试：输入张量补充 batch 维度，消除 RKNN 模拟器 "dims wrong, expect 4" 警告
+- 修复推理后处理：新增 `_squeeze_batch` 自动剥除模拟器多出的 batch singleton 维度，解决 "5 were indexed on 4D array" 错误
+- 修复输出方向：改用 `shape[0] > shape[1]` 自动判断是否需要转置，避免因模拟器输出 layout 不同导致坐标全零的假目标
+- 新增 split-head 9张量后处理路径（`_dfl_numpy` + `_postprocess_det_splithead`），支持 rknnopt 多头输出格式
+- 修复类别分数：rknnopt 模型类别输出已内置 sigmoid，移除后处理中重复的 sigmoid，解决全部目标分数 0.500 的问题
+- UI：推理测试面板新增模拟器模式说明提示，明确告知用户实际运行的是 .onnx 而非 .rknn
 
 ### v0.0.1 (2026-03-03)
 

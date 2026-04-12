@@ -24,24 +24,32 @@ IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.JPEG', '.JPG', '.PNG')
 
 def _normalize_path(path):
     """
-    将用户输入的路径统一转换为 WSL/Linux 路径。
+    将用户输入的路径统一转换为容器内路径。
     支持以下格式：
-      E:\\datasets\\coco   →  /mnt/e/datasets/coco
-      E:/datasets/coco     →  /mnt/e/datasets/coco
-      /mnt/e/datasets/coco →  /mnt/e/datasets/coco  (不变)
+      E:\\datasets\\coco   →  /e/datasets/coco
+      E:/datasets/coco     →  /e/datasets/coco
+      /e/datasets/coco     →  /e/datasets/coco  (不变)
+      /mnt/e/datasets/coco →  /e/datasets/coco  (兼容旧格式)
     """
     if not path:
         return path
     path = path.strip().strip('"').strip("'")   # 去掉引号（用户可能从资源管理器复制）
+    
+    # 兼容旧的 /mnt/ 格式，转换为新格式
+    if path.startswith('/mnt/'):
+        path = path[4:]  # 移除 /mnt 前缀
+        logger.info('WSL 路径已转换为容器内路径: %s', path)
+        return path
+    
     # 判断是否为 Windows 盘符路径，如 C:\ 或 D:/
     if len(path) >= 2 and path[1] == ':':
         drive = path[0].lower()                 # 盘符小写
         rest = path[2:].replace('\\', '/')      # 剩余路径，反斜杠转正斜杠
         rest = rest.lstrip('/')                 # 去掉开头多余的斜杠
-        path = '/mnt/{}/{}'.format(drive, rest)
-        logger.info('Windows 路径已转换为 WSL 路径: %s', path)
+        path = '/{}/{}'.format(drive, rest)
+        logger.info('Windows 路径已转换为容器内路径: %s', path)
     else:
-        # 已是 Linux/WSL 路径，仅将反斜杠统一替换（以防万一）
+        # 已是 Linux 路径，仅将反斜杠统一替换（以防万一）
         path = path.replace('\\', '/')
     return path
 

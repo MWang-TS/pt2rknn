@@ -814,10 +814,14 @@ setInterval(loadHistory,30000);
         <label>类别名称（逗号分隔，空则默认 cls0/cls1/…）</label>
         <input type="text" id="inferClassNames" placeholder="例：cat,dog,person 或留空">
       </div>
+      <div style="background:#fffbea;border:1px solid #ffe08a;border-radius:8px;padding:9px 12px;margin-bottom:12px;font-size:.82em;color:#7a6000;line-height:1.6">
+        ⚠️ <strong>模拟器模式说明</strong>：推理测试实际加载的是与 .rknn 同名的 <code>.onnx</code> 文件，在 x86 CPU 上通过 rknn-toolkit2 模拟器运行，<strong>不是</strong>在设备上执行 .rknn 模型。<br>
+        推理耗时仅反映 x86 模拟性能，不代表设备实际速度；量化（INT8）误差需通过「精度分析」功能验证。
+      </div>
       <button class="infer-run-btn" id="inferRunBtn" onclick="runInference()" disabled>🚀 开始推理</button>
       <div style="display:flex;align-items:center;margin-bottom:14px">
         <button class="infer-run-btn acc" id="accuracyRunBtn" onclick="runAccuracyAnalysis()" disabled>🔬 精度分析</button>
-        <label style="font-size:.82em;color:#666;margin-left:12px;cursor:pointer" title="对 i8 模型用单张测试图快速量化，对比 ONNX vs INT8 RKNN 误差（非生产级校准）">
+        <label style="font-size:.82em;color:#666;margin-left:12px;cursor:pointer" title="精度分析同样通过 rknn-toolkit2 模拟器运行，基于 .onnx 文件构建图并对比 FP vs INT8 误差，非设备真实运行">
           <input type="checkbox" id="accDoQuant" style="margin-right:4px">INT8 量化对比（i8 模型专用）
         </label>
       </div>

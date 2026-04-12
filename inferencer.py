@@ -129,8 +129,138 @@ def _decode_yolo_common(pred, conf_thresh, iou_thresh, num_extra=0):
     return boxes_cxcywh, class_ids, class_scores, extra_filtered
 
 
+
+# ─────────────────────────────────────────────────────────────
+# RKNN split-head (9 or 6 outputs) helper — numpy-only DFL decode
+# ─────────────────────────────────────────────────────────────
+
+def _dfl_numpy(position):
+    """DFL softmax decode. position: (1, 64, H, W) → (1, 4, H, W)"""
+    n, c, h, w = position.shape
+    mc = c // 4  # reg_max (typically 16)
+    y = position.reshape(n, 4, mc, h, w)
+    y_exp = np.exp(y - y.max(axis=2, keepdims=True))
+    y_soft = y_exp / y_exp.sum(axis=2, keepdims=True)
+    acc = np.arange(mc, dtype=np.float32).reshape(1, 1, mc, 1, 1)
+    return (y_soft * acc).sum(axis=2)  # (n, 4, h, w)
+
+
+def _box_process_splithead(box_raw, input_hw=(640, 640)):
+    """box_raw: (1, 64, H, W) → xyxy (1, 4, H, W) in input image pixels"""
+    grid_h, grid_w = box_raw.shape[2:4]
+    col = np.arange(grid_w, dtype=np.float32).reshape(1, 1, 1, grid_w)
+    row = np.arange(grid_h, dtype=np.float32).reshape(1, 1, grid_h, 1)
+    col = np.broadcast_to(col, (1, 1, grid_h, grid_w))
+    row = np.broadcast_to(row, (1, 1, grid_h, grid_w))
+    grid = np.concatenate([col, row], axis=1)  # (1, 2, H, W)  [x, y]
+    stride = np.array([input_hw[1] / grid_h, input_hw[0] / grid_w],
+                      dtype=np.float32).reshape(1, 2, 1, 1)
+    ltrb = _dfl_numpy(box_raw)     # (1, 4, H, W)
+    xy1 = (grid + 0.5 - ltrb[:, 0:2]) * stride
+    xy2 = (grid + 0.5 + ltrb[:, 2:4]) * stride
+    return np.concatenate([xy1, xy2], axis=1)  # (1, 4, H, W)  xyxy
+
+
+def _postprocess_det_splithead(outputs, orig_bgr, scale, pad_x, pad_y,
+                                conf_thresh, iou_thresh, class_names,
+                                input_hw=(640, 640)):
+    """Handle rknn 6-head or 9-head split outputs.
+    Layout per scale (pair_per_branch = len(outputs)//3):
+      [0]: box DFL (64, H, W)
+      [1]: class logits (nc, H, W)  — sigmoid not yet applied
+      [2]: score-sum (ignored, only present in 9-head format)
+    """
+    result = orig_bgr.copy()
+    orig_h, orig_w = orig_bgr.shape[:2]
+    summary_lines = []
+
+    n_branch = 3
+    pair = len(outputs) // n_branch   # 2 or 3
+
+    all_xyxy, all_cls_conf = [], []
+    for i in range(n_branch):
+        box_raw = outputs[i * pair]          # (64, H, W) or (1, 64, H, W)
+        cls_raw = outputs[i * pair + 1]      # (nc, H, W) or (1, nc, H, W) or (H, W) if nc=1
+
+        # ensure 4D for box
+        if box_raw.ndim == 3:
+            box_raw = box_raw[np.newaxis]    # → (1, 64, H, W)
+
+        # ensure 4D for class (handle nc=1 squeezed to 2D)
+        if cls_raw.ndim == 2:
+            cls_raw = cls_raw[np.newaxis, np.newaxis]   # (H, W) → (1, 1, H, W)
+        elif cls_raw.ndim == 3:
+            cls_raw = cls_raw[np.newaxis]               # (nc, H, W) → (1, nc, H, W)
+
+        xyxy = _box_process_splithead(box_raw, input_hw)  # (1, 4, H, W)
+
+        h_grid, w_grid = box_raw.shape[2:4]
+        # flatten spatial → (H*W, 4)
+        xyxy_flat = xyxy[0].reshape(4, -1).T            # (H*W, 4)
+        # sigmoid class scores → (H*W, nc)
+        cls_sig = cls_raw[0]   # already sigmoid-applied by rknnopt model, (nc, H, W)
+        nc = cls_sig.shape[0]
+        cls_flat = cls_sig.reshape(nc, -1).T            # (H*W, nc)
+
+        all_xyxy.append(xyxy_flat)
+        all_cls_conf.append(cls_flat)
+
+    boxes_xyxy = np.concatenate(all_xyxy)     # (N_total, 4)
+    cls_conf   = np.concatenate(all_cls_conf)  # (N_total, nc)
+
+    class_ids  = np.argmax(cls_conf, axis=1)
+    class_scores = cls_conf[np.arange(len(cls_conf)), class_ids]
+    mask = class_scores >= conf_thresh
+
+    boxes_xyxy   = boxes_xyxy[mask]
+    class_ids    = class_ids[mask]
+    class_scores = class_scores[mask]
+
+    if len(boxes_xyxy) == 0:
+        summary_lines.append('未检测到目标（置信度阈值 {:.2f}）'.format(conf_thresh))
+        return result, '\n'.join(summary_lines), []
+
+    # NMS per class
+    keep_all = []
+    for cid in np.unique(class_ids):
+        idx = np.where(class_ids == cid)[0]
+        keep = nms(boxes_xyxy[idx], class_scores[idx], iou_thresh)
+        keep_all.extend(idx[keep].tolist())
+
+    boxes_xyxy   = boxes_xyxy[keep_all]
+    class_ids    = class_ids[keep_all]
+    class_scores = class_scores[keep_all]
+
+    # restore from letterbox space → original image coords
+    boxes_orig = restore_boxes(boxes_xyxy, scale, pad_x, pad_y, orig_w, orig_h)
+
+    detections = []
+    for box, cid, score in zip(boxes_orig, class_ids, class_scores):
+        x1o, y1o, x2o, y2o = [int(v) for v in box]
+        name = (class_names[int(cid)] if class_names and int(cid) < len(class_names)
+                else 'cls{}'.format(int(cid)))
+        color = _color(int(cid))
+        cv2.rectangle(result, (x1o, y1o), (x2o, y2o), color, 2)
+        label = '{} {:.2f}'.format(name, float(score))
+        (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        cv2.rectangle(result, (x1o, y1o - lh - 6), (x1o + lw, y1o), color, -1)
+        cv2.putText(result, label, (x1o, y1o - 4), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (255, 255, 255), 1)
+        detections.append({'class': name, 'score': round(float(score), 3),
+                           'box': [x1o, y1o, x2o, y2o]})
+
+    summary_lines.append('检测到 {} 个目标'.format(len(detections)))
+    for d in detections:
+        summary_lines.append('  {} {:.3f}  {}'.format(d['class'], d['score'], d['box']))
+    return result, '\n'.join(summary_lines), detections
+
 def postprocess_det(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thresh, class_names):
-    """YOLOv8-Det: outputs[0] shape [1, 4+nc, 8400]"""
+    """YOLOv8-Det: single output [1,4+nc,8400] OR rknn split-head (6 or 9 tensors)"""
+    # Auto-detect rknn split-head format
+    if len(outputs) > 1:
+        return _postprocess_det_splithead(outputs, orig_bgr, scale, pad_x, pad_y,
+                                          conf_thresh, iou_thresh, class_names)
+
     result = orig_bgr.copy()
     h, w = orig_bgr.shape[:2]
     summary_lines = []
@@ -138,7 +268,8 @@ def postprocess_det(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thr
     raw = outputs[0]  # [1, 4+nc, 8400]
     if raw.ndim == 3:
         raw = raw[0]              # [4+nc, 8400]
-    pred = raw.T                  # [8400, 4+nc]
+    # 自动判断方向：锚点数(8400) >> 通道数(84)，shape[0]>shape[1] 说明已是 (anchors, ch)
+    pred = raw if raw.shape[0] > raw.shape[1] else raw.T  # [8400, 4+nc]
 
     boxes_cxcywh, cids, cscores, _ = _decode_yolo_common(pred, conf_thresh, iou_thresh)
     if len(boxes_cxcywh) == 0:
@@ -190,7 +321,7 @@ def postprocess_seg(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thr
     # 用 det 后处理处理主输出（忽略掩码 proto 输出）
     main_out = outputs[0]
     raw = main_out[0] if main_out.ndim == 3 else main_out
-    raw = raw.T  # [8400, 4+nc+32]
+    raw = raw if raw.shape[0] > raw.shape[1] else raw.T  # [8400, 4+nc+32]
     # 剔除末尾32维掩码系数
     nc = raw.shape[1] - 4 - 32
     # 只取 det 部分
@@ -214,7 +345,7 @@ def postprocess_pose(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_th
     raw = outputs[0]
     if raw.ndim == 3:
         raw = raw[0]
-    pred = raw.T  # [8400, 56]
+    pred = raw if raw.shape[0] > raw.shape[1] else raw.T  # [8400, 56]
 
     boxes_cxcywh = pred[:, :4]
     scores = 1 / (1 + np.exp(-pred[:, 4]))   # sigmoid person score
@@ -282,7 +413,7 @@ def postprocess_obb(outputs, orig_bgr, scale, pad_x, pad_y, conf_thresh, iou_thr
     raw = outputs[0]
     if raw.ndim == 3:
         raw = raw[0]
-    pred = raw.T  # [8400, 4+nc+1]
+    pred = raw if raw.shape[0] > raw.shape[1] else raw.T  # [8400, 4+nc+1]
 
     nc = pred.shape[1] - 5
     boxes_cxcywh = pred[:, :4]
@@ -506,13 +637,26 @@ def run_inference(rknn_path, img_bgr, model_type, input_w, input_h,
             raise RuntimeError('init_runtime 失败，返回码 {}'.format(ret))
 
         t0 = time.time()
-        outputs = rknn.inference(inputs=[img_lb])
+        outputs = rknn.inference(inputs=[img_lb[np.newaxis]])  # (1, H, W, C)
         infer_ms = (time.time() - t0) * 1000
+        # Squeeze extra leading batch singleton dims that simulator may add
+        # e.g. (1,1,N,8400) → (N,8400) so postprocessing sees expected 2-D tensor
+        if outputs:
+            def _squeeze_batch(arr):
+                # Only strip the batch dim once; preserve nc dim (e.g. nc=1 → (1,H,W))
+                if arr is not None and arr.ndim > 1 and arr.shape[0] == 1:
+                    arr = arr[0]
+                return arr
+            outputs = [_squeeze_batch(o) for o in outputs]
     finally:
         rknn.release()
 
     if outputs is None or len(outputs) == 0:
         raise RuntimeError('inference() 返回空结果')
+
+    # DEBUG: log actual output shapes
+    logger.info('[DEBUG] 推理输出 %d 个张量，shapes: %s',
+                len(outputs), [o.shape for o in outputs])
 
     # 后处理分发
     if model_type == 'yolov8_det':

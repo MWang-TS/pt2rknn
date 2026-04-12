@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  pt2rknn:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pt2rknn-web:latest
+    container_name: pt2rknn-web
+    ports:
+      - "5600:5600"  # Web UI 端口
+    volumes:
+      # 挂载源码（开发模式，修改代码无需重新构建）
+      - ./calibration_builder.py:/app/calibration_builder.py
+      - ./app.py:/app/app.py
+      - ./converter.py:/app/converter.py
+      # 挂载上传目录
+      - ./uploads:/app/uploads
+      # 挂载输出目录
+      - ./output:/app/output
+      # 挂载校准数据目录
+      - ./calibration_data:/app/calibration_data
+      # 挂载宿主机文件系统（只读），允许访问任意目录
+      # Windows: 挂载所有常用驱动器
+      - c:/:/c:ro
+      - d:/:/d:ro
+      - e:/:/e:ro
+      # Linux: 取消以下注释以挂载文件系统
+      # - /:/host:ro
+    environment:
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    networks:
+      - pt2rknn-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  pt2rknn-network:
+    driver: bridge

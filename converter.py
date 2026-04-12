@@ -79,15 +79,41 @@ def pt_to_rknnopt(pt_path: str, input_size: tuple, tmp_dir: str):
             dynamic=False,
         )
         ts_path = str(result)
-        if not os.path.exists(ts_path):
-            # ultralytics rknn export 生成 _rknnopt.torchscript
+        logger.info(f'[PT→rknnopt] ultralytics 返回路径：{ts_path}')
+        
+        # 处理返回路径可能是目录或文件的情况
+        if os.path.isdir(ts_path):
+            # 如果是目录，在目录中查找 .torchscript 文件
+            logger.warning(f'[PT→rknnopt] 返回的是目录，尝试在目录中查找 .torchscript 文件')
+            candidates = glob.glob(os.path.join(ts_path, '*.torchscript'))
+            if candidates:
+                ts_path = candidates[0]
+                logger.info(f'[PT→rknnopt] 在目录中找到：{ts_path}')
+            else:
+                return False, f'导出目录中未找到 .torchscript 文件：{ts_path}', ''
+        elif os.path.isfile(ts_path):
+            # 如果是文件但没有扩展名，添加 .torchscript
+            if not ts_path.endswith('.torchscript') and not ts_path.endswith('.pt'):
+                new_path = ts_path + '.torchscript'
+                os.rename(ts_path, new_path)
+                ts_path = new_path
+                logger.info(f'[PT→rknnopt] 文件已重命名为：{ts_path}')
+        else:
+            # 文件不存在，尝试在 PT 文件目录查找
+            logger.warning(f'[PT→rknnopt] 路径不存在：{ts_path}，尝试查找备用路径')
             base = os.path.splitext(pt_path)[0]
-            for suffix in ('_rknnopt.torchscript', '_rknnopt.pt'):
-                if os.path.exists(base + suffix):
-                    ts_path = base + suffix
+            for suffix in ('_rknnopt.torchscript', '_rknn_model.torchscript', '.torchscript'):
+                candidate = base + suffix
+                if os.path.isfile(candidate):
+                    ts_path = candidate
+                    logger.info(f'[PT→rknnopt] 找到备用文件：{ts_path}')
                     break
             else:
-                return False, 'rknnopt 导出成功但找不到输出文件', ''
+                return False, 'rknnopt 导出后找不到输出文件', ''
+        
+        if not os.path.isfile(ts_path):
+            return False, f'最终路径不是有效文件：{ts_path}', ''
+            
         logger.info(f'[PT→rknnopt] 导出完成：{ts_path}')
         return True, 'PT → rknnopt torchscript 导出成功', ts_path
     except Exception as e:
