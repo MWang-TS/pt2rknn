@@ -12,7 +12,13 @@ ALLOWED_EXTENSIONS = {'pt', 'pth'}
 # 目录配置
 UPLOAD_FOLDER = './uploads'
 OUTPUT_FOLDER = './output'
-CALIBRATION_FOLDER = './calibration_data'
+# Docker 容器内用 ./calibration_data（volume 挂载）
+# WSL/Linux 源码运行时用 ~/pt2rknn_calibration/，避免 /mnt/ NTFS 权限问题
+import os as _os
+CALIBRATION_FOLDER = (
+    './calibration_data' if _os.path.exists('/.dockerenv')
+    else _os.path.join(_os.path.expanduser('~'), 'pt2rknn_calibration')
+)
 
 # 转换默认参数
 DEFAULT_PLATFORM = 'rk3576'

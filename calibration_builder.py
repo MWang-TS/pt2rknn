@@ -19,38 +19,67 @@ IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.JPEG', '.JPG', '.PNG')
 
 
 # ─────────────────────────────────────────────────────────────
-# 路径规范化：自动将 Windows 路径转换为 WSL 路径
+# 路径规范化：自动将 Windows 路径转换为当前运行环境的路径
 # ─────────────────────────────────────────────────────────────
+
+import re as _re
+
+def _is_docker():
+    """检测当前是否运行在 Docker 容器内"""
+    return os.path.exists('/.dockerenv')
 
 def _normalize_path(path):
     """
-    将用户输入的路径统一转换为容器内路径。
-    支持以下格式：
+    将用户输入的路径统一转换为当前运行环境的路径。
+
+    Docker 模式（存在 /.dockerenv）：
+      盘符挂载规则同 docker-compose.yml: e:/ → /e
       E:\\datasets\\coco   →  /e/datasets/coco
-      E:/datasets/coco     →  /e/datasets/coco
+      /mnt/e/datasets/coco →  /e/datasets/coco  (WSL格式兼容转换)
       /e/datasets/coco     →  /e/datasets/coco  (不变)
-      /mnt/e/datasets/coco →  /e/datasets/coco  (兼容旧格式)
+
+    WSL / 原生 Linux 模式：
+      E:\\datasets\\coco   →  /mnt/e/datasets/coco
+      /mnt/e/datasets/coco →  /mnt/e/datasets/coco  (不变)
+      /e/datasets/coco     →  /mnt/e/datasets/coco  (旧格式兼容转换)
     """
     if not path:
         return path
     path = path.strip().strip('"').strip("'")   # 去掉引号（用户可能从资源管理器复制）
-    
-    # 兼容旧的 /mnt/ 格式，转换为新格式
-    if path.startswith('/mnt/'):
-        path = path[4:]  # 移除 /mnt 前缀
-        logger.info('WSL 路径已转换为容器内路径: %s', path)
-        return path
-    
-    # 判断是否为 Windows 盘符路径，如 C:\ 或 D:/
+
+    in_docker = _is_docker()
+
+    # Windows 盘符路径，如 C:\ 或 D:/
     if len(path) >= 2 and path[1] == ':':
-        drive = path[0].lower()                 # 盘符小写
-        rest = path[2:].replace('\\', '/')      # 剩余路径，反斜杠转正斜杠
-        rest = rest.lstrip('/')                 # 去掉开头多余的斜杠
-        path = '/{}/{}'.format(drive, rest)
-        logger.info('Windows 路径已转换为容器内路径: %s', path)
+        drive = path[0].lower()
+        rest = path[2:].replace('\\', '/').lstrip('/')
+        if in_docker:
+            path = '/{}/{}'.format(drive, rest)
+            logger.info('Windows 路径已转换为 Docker 容器路径: %s', path)
+        else:
+            path = '/mnt/{}/{}'.format(drive, rest)
+            logger.info('Windows 路径已转换为 WSL 路径: %s', path)
+        return path
+
+    path = path.replace('\\', '/')
+
+    if in_docker:
+        # Docker 模式：将 /mnt/x/ 格式转换为 /x/
+        if path.startswith('/mnt/') and len(path) > 6 and path[5] == '/':
+            path = path[4:]  # 去掉 /mnt 前缀
+            logger.info('WSL /mnt/ 路径已转换为 Docker 容器路径: %s', path)
+        else:
+            logger.info('Docker 容器路径，无需转换: %s', path)
     else:
-        # 已是 Linux 路径，仅将反斜杠统一替换（以防万一）
-        path = path.replace('\\', '/')
+        # WSL 模式：将 /x/ 单字母盘符格式转换为 /mnt/x/
+        if _re.match(r'^/[a-zA-Z]/', path):
+            path = '/mnt' + path
+            logger.info('旧格式路径已转换为 WSL /mnt/ 路径: %s', path)
+        elif path.startswith('/mnt/'):
+            logger.info('WSL /mnt/ 路径，无需转换: %s', path)
+        else:
+            logger.info('Linux 路径，无需转换: %s', path)
+
     return path
 
 # 公开别名，供外部直接调用
@@ -183,8 +212,28 @@ def build_calibration_dataset(
     if os.path.islink(images_out):
         os.unlink(images_out)
     elif os.path.isdir(images_out):
-        shutil.rmtree(images_out)
-    os.makedirs(images_out)
+        def _force_remove(func, path, _exc):
+            """WSL /mnt/ 路径权限问题：先 chmod 再重试"""
+            try:
+                os.chmod(path, 0o777)
+                func(path)
+            except Exception:
+                pass
+        shutil.rmtree(images_out, onerror=_force_remove)
+        # rmtree 在 WSL/NTFS 下可能因权限问题无法删除目录本身，
+        # 若目录仍存在则逐个删除其中文件，再清空目录
+        if os.path.isdir(images_out):
+            for f in os.listdir(images_out):
+                fp = os.path.join(images_out, f)
+                try:
+                    if os.path.isfile(fp) or os.path.islink(fp):
+                        os.chmod(fp, 0o777)
+                        os.unlink(fp)
+                    elif os.path.isdir(fp):
+                        shutil.rmtree(fp, onerror=_force_remove)
+                except Exception as e:
+                    logger.warning('无法删除旧校准文件 %s: %s', fp, e)
+    os.makedirs(images_out, exist_ok=True)
 
     # 复制图片（若已是相同路径则跳过复制）
     copied_paths = []

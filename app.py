@@ -119,7 +119,12 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
 app.config['UPLOAD_FOLDER'] = './uploads'
 app.config['OUTPUT_FOLDER'] = './output'
-app.config['CALIBRATION_FOLDER'] = './calibration_data'
+# Docker 容器内直接用 ./calibration_data（已通过 volume 挂载）
+# WSL / 原生 Linux 下改用 ~/pt2rknn_calibration/，避免 /mnt/ NTFS 权限问题
+if os.path.exists('/.dockerenv'):
+    app.config['CALIBRATION_FOLDER'] = './calibration_data'
+else:
+    app.config['CALIBRATION_FOLDER'] = os.path.join(os.path.expanduser('~'), 'pt2rknn_calibration')
 
 # 确保必要的目录存在
 for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.config['CALIBRATION_FOLDER']]:
@@ -366,12 +371,17 @@ def calibration_prepare():
     subdir = MODEL_REGISTRY[model_type]['calibration_subdir']
     output_dir = os.path.join(app.config['CALIBRATION_FOLDER'], subdir)
 
-    ok, msg, count = build_calibration_dataset(
-        dataset_path=dataset_path,
-        output_dir=output_dir,
-        model_type=model_type,
-        max_images=max_images,
-    )
+    try:
+        ok, msg, count = build_calibration_dataset(
+            dataset_path=dataset_path,
+            output_dir=output_dir,
+            model_type=model_type,
+            max_images=max_images,
+        )
+    except Exception as e:
+        import traceback
+        app.logger.error('build_calibration_dataset 异常:\n%s', traceback.format_exc())
+        return jsonify({'success': False, 'message': f'提取失败：{e}'}), 500
     return jsonify({
         'success': ok,
         'message': msg,
@@ -397,7 +407,12 @@ def calibration_link():
     subdir = MODEL_REGISTRY[model_type]['calibration_subdir']
     output_dir = os.path.join(app.config['CALIBRATION_FOLDER'], subdir)
 
-    ok, msg, count = link_calibration_dataset(dataset_path, output_dir, force=force)
+    try:
+        ok, msg, count = link_calibration_dataset(dataset_path, output_dir, force=force)
+    except Exception as e:
+        import traceback
+        app.logger.error('link_calibration_dataset 异常:\n%s', traceback.format_exc())
+        return jsonify({'success': False, 'message': f'链接失败：{e}'}), 500
     return jsonify({'success': ok, 'message': msg, 'count': count})
 
 
@@ -413,7 +428,7 @@ def calibration_detect():
     resp = {'success': fmt not in ('invalid', 'empty'), 'format': fmt, 'description': desc}
     if resolved != path:
         resp['resolved_path'] = resolved
-        resp['description'] = desc + f'（路径已转换为 WSL：{resolved}）'
+        resp['description'] = desc + f'（路径已转换为 WSL /mnt/ 格式：{resolved}）'
     return jsonify(resp)
 
 

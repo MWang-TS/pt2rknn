@@ -1,4 +1,4 @@
-# PT → RKNN 多模型转换工具 🚀 `v0.0.2`
+# PT → RKNN 多模型转换工具 🚀 `v0.0.1`
 
 一个基于 Web 界面的模型转换工具，将 PyTorch (.pt/.pth) 或 ONNX 模型转换为 RKNN 格式，专为 Rockchip NPU 设备优化。
 
@@ -69,6 +69,12 @@ pip install -r requirements.txt
 
 ## 🛠️ 安装 & 启动
 
+> 本工具支持两种运行方式：**源码直接运行（WSL）** 和 **Docker 容器**，路径转换规则有所不同，请按实际方式配置。
+
+---
+
+### 方式一：源码运行（WSL / Linux）
+
 ```bash
 # 克隆仓库
 git clone https://github.com/MWang-TS/pt2rknn.git
@@ -79,10 +85,60 @@ conda activate rk-y8
 
 # 启动 Web 服务
 python app.py
-# 默认监听 http://0.0.0.0:5000
+# 默认监听 http://0.0.0.0:5600
 ```
 
-打开浏览器访问 **http://localhost:5000** 即可使用。
+打开浏览器访问 **http://localhost:5600** 即可使用。
+
+#### 路径配置说明（WSL 模式）
+
+| 项目 | 规则 |
+|------|------|
+| Windows 输入路径 | 自动转换为 WSL `/mnt/` 格式：`E:\data` → `/mnt/e/data` |
+| INT8 校准数据存储 | `~/pt2rknn_calibration/`（WSL 本地文件系统，避免 NTFS 权限问题）|
+| 上传 / 输出目录 | 相对路径 `./uploads` / `./output`（在项目目录下）|
+
+> **注意**：WSL 默认挂载 Windows NTFS 分区无写权限，因此校准图片会复制到 WSL 本地 `~` 目录下，而不是 Windows 路径。
+
+---
+
+### 方式二：Docker 容器
+
+```bash
+cd pt2rknn
+
+# 构建并启动
+chmod +x docker-build.sh
+./docker-build.sh
+docker-compose up -d
+```
+
+打开浏览器访问 **http://localhost:5600** 即可使用。
+
+#### 路径配置说明（Docker 模式）
+
+| 项目 | 规则 |
+|------|------|
+| Windows 输入路径 | 自动转换为容器内路径：`E:\data` → `/e/data` |
+| INT8 校准数据存储 | `./calibration_data`（已通过 volume 挂载到容器内 `/app/calibration_data`）|
+| 上传 / 输出目录 | `./uploads` / `./output`（volume 挂载）|
+
+docker-compose.yml 默认映射 Windows 盘符（只读访问宿主数据集）：
+
+```yaml
+volumes:
+  - c:/:/c:ro   # C: → /c
+  - d:/:/d:ro   # D: → /d
+  - e:/:/e:ro   # E: → /e
+```
+
+Linux 宿主机若需访问整个文件系统，取消注释：
+
+```yaml
+# - /:/host:ro
+```
+
+详细 Docker 部署说明请参阅 [README-Docker.md](README-Docker.md)。
 
 ---
 
@@ -174,16 +230,13 @@ cp /your/coco/val2017/*.jpg calibration_data/coco/images/
 
 ---
 
-## � 版本历史
+## 📝 版本历史
 
-### v0.0.3 (2026-04-12)
+### v0.0.2 (2026-06-11)
 
-- 修复推理测试：输入张量补充 batch 维度，消除 RKNN 模拟器 "dims wrong, expect 4" 警告
-- 修复推理后处理：新增 `_squeeze_batch` 自动剥除模拟器多出的 batch singleton 维度，解决 "5 were indexed on 4D array" 错误
-- 修复输出方向：改用 `shape[0] > shape[1]` 自动判断是否需要转置，避免因模拟器输出 layout 不同导致坐标全零的假目标
-- 新增 split-head 9张量后处理路径（`_dfl_numpy` + `_postprocess_det_splithead`），支持 rknnopt 多头输出格式
-- 修复类别分数：rknnopt 模型类别输出已内置 sigmoid，移除后处理中重复的 sigmoid，解决全部目标分数 0.500 的问题
-- UI：推理测试面板新增模拟器模式说明提示，明确告知用户实际运行的是 .onnx 而非 .rknn
+- **WSL/Docker 双模式路径转换**：自动检测运行环境（`/.dockerenv`），WSL 模式 Windows 路径转为 `/mnt/x/...`，Docker 模式转为 `/x/...`
+- **WSL 模式 INT8 校准数据目录**改为 `~/pt2rknn_calibration/`，彻底解决 `/mnt/` NTFS 挂载无写权限导致的文件删除/复制失败问题
+- **接口异常捕获**：`calibration_prepare` / `calibration_link` 全面捕获异常，返回 JSON 而非 HTML 500 页面
 
 ### v0.0.1 (2026-03-03)
 
@@ -202,20 +255,3 @@ cp /your/coco/val2017/*.jpg calibration_data/coco/images/
 - [rknn-toolkit2 文档](https://github.com/airockchip/rknn-toolkit2)
 - [Ultralytics YOLOv8](https://docs.ultralytics.com)
 - [Netron 模型可视化](https://netron.app)
-
-## v0.0.3 (2025-07-12)
-
-### 新增功能
-- **Seg split-head 支持**：正确处理 rknnopt 导出的 13 输出格式（4×3 scale + proto），实现掩码渲染（双线性插值 + sigmoid 叠加）
-- **Pose split-head 支持**：正确处理 4 输出格式（3 scale × combined DFL+cls + 全锚点 kpts 张量），关键点从锚点偏移索引中提取
-- **OBB split-head 支持**：正确处理 4 输出格式（3 scale × combined DFL+cls + 角度张量），旋转框用 cv2.boxPoints 渲染
-- **input_hw 全链路传递**：推理实际分辨率现在正确传给所有 split-head 解码器（不再硬编码 640×640）
-
-### 修复
-- 移除残留 `[DEBUG]` 推理输出日志
-- Seg ONNX 单输出路径重写：使用 `_decode_yolo_common(num_extra=32)` 提取掩码系数，实现真正的掩码叠加渲染
-
-### 新增辅助函数
-- `_render_masks()` - 统一掩码叠加 + 标签绘制
-- `_compute_seg_masks()` - 掩码系数 × proto → sigmoid 掩码图
-- `_draw_pose()` - 关键点 + 骨架渲染（复用于 ONNX/split-head 两路径）
