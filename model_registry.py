@@ -138,9 +138,40 @@ def validate_pt_task(model_type: str, pt_path: str) :
     if expected_task is None:
         return True, "不需要 task 校验"
     try:
-        from ultralytics import YOLO
-        model = YOLO(pt_path)
-        actual_task = getattr(model, 'task', None)
+        # 直接读取 .pt 内的 metadata，通过猴子补丁拦截未知类（如 DFLoss），不依赖 ultralytics 版本
+        import torch
+        import pickle as _pickle
+
+        class _Stub:
+            def __init__(self, *a, **kw): pass
+            def __setstate__(self, s):
+                if isinstance(s, dict):
+                    self.__dict__.update(s)
+
+        _orig_pkl_unpickler = _pickle.Unpickler
+
+        class _SafeUnpickler(_orig_pkl_unpickler):
+            def find_class(self, module, name):
+                try:
+                    return super().find_class(module, name)
+                except (AttributeError, ModuleNotFoundError, ImportError):
+                    return _Stub
+
+        actual_task = None
+        try:
+            _pickle.Unpickler = _SafeUnpickler
+            ckpt = torch.load(pt_path, map_location='cpu')
+        except Exception:
+            ckpt = {}
+        finally:
+            _pickle.Unpickler = _orig_pkl_unpickler
+
+        if isinstance(ckpt, dict):
+            train_args = ckpt.get('train_args') or ckpt.get('args') or {}
+            if hasattr(train_args, '__dict__'):   # SimpleNamespace / stub
+                actual_task = getattr(train_args, 'task', None)
+            elif isinstance(train_args, dict):
+                actual_task = train_args.get('task')
         if actual_task and actual_task != expected_task:
             task_map = {
                 'detect': 'YOLOv8-Det 目标检测',

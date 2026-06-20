@@ -7,9 +7,15 @@ ONNX系列: ONNX --(rknn-toolkit2)--> RKNN
 import os
 import sys
 import glob
+import json
 import logging
+import subprocess
+import tempfile
 
 from model_registry import MODEL_REGISTRY
+
+# yolov8-gpu 环境 Python 路径（WSL 下用 /mnt/ 路径直接执行 Windows exe）
+_WIN_YOLO_PYTHON = '/mnt/e/Anaconda3/envs/yolov8-gpu/python.exe'
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -53,6 +59,85 @@ def _resolve_dataset(calibration_dir: str, subdir: str):
 # ──────────────────────────────────────────────────────────────
 # PT → ONNX（仅 YOLO 系列，使用 ultralytics 导出）
 # ──────────────────────────────────────────────────────────────
+
+
+def _wsl_to_win(path: str) -> str:
+    """将 WSL /mnt/x/... 路径转换为 Windows X:\\... 路径"""
+    if path.startswith('/mnt/') and len(path) > 5:
+        parts = path[5:].split('/', 1)
+        drive = parts[0].upper()
+        rest = parts[1].replace('/', '\\') if len(parts) > 1 else ''
+        return f'{drive}:\\{rest}'
+    return path
+
+
+def _win_to_wsl(path: str) -> str:
+    """将 Windows X:\\... 路径转换为 WSL /mnt/x/... 路径"""
+    if len(path) >= 3 and path[1] == ':':
+        drive = path[0].lower()
+        rest = path[2:].replace('\\', '/')
+        return f'/mnt/{drive}{rest}'
+    return path
+
+
+def _pt_export_subprocess(pt_path: str, input_size: tuple, fmt: str) -> tuple:
+    """
+    通过 subprocess 调用 yolov8-gpu Python 导出 ONNX 或 rknn torchscript。
+    用于处理当前环境 ultralytics 版本过旧、无法加载新模型的情况。
+    fmt: 'onnx' 或 'rknn'
+    """
+    # WSL 路径转 Windows 路径传给 Windows Python
+    win_pt = _wsl_to_win(pt_path)
+
+    script_content = (
+        "import sys, os\n"
+        "sys.path = [p for p in sys.path if 'ultralytics_yolov8' not in p]\n"
+        "from ultralytics import YOLO\n"
+        f"model = YOLO({json.dumps(win_pt)})\n"
+        f"result = model.export(format={json.dumps(fmt)}, imgsz={list(input_size)}, "
+        "simplify=True, opset=12, dynamic=False)\n"
+        'print("__OUTPUT__:" + str(result))\n'
+    )
+
+    tmp_script_wsl = None
+    tmp_script_win = None
+    try:
+        # 写到 Windows 可访问的目录（/mnt/e 下），Windows Python 才能读取
+        win_tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+        os.makedirs(win_tmp_dir, exist_ok=True)
+        import tempfile
+        fd, tmp_script_wsl = tempfile.mkstemp(suffix='.py', prefix='rknn_export_', dir=win_tmp_dir)
+        with os.fdopen(fd, 'w') as f:
+            f.write(script_content)
+        tmp_script_win = _wsl_to_win(tmp_script_wsl)
+
+        # WSL 可以直接执行 Windows .exe（通过 /mnt/ 路径）
+        proc = subprocess.run(
+            [_WIN_YOLO_PYTHON, tmp_script_win],
+            capture_output=True, text=True, timeout=300
+        )
+        output = proc.stdout + proc.stderr
+        logger.debug(f'[subprocess] stdout: {proc.stdout[-400:]}')
+        if proc.returncode != 0:
+            logger.debug(f'[subprocess] stderr: {proc.stderr[-400:]}')
+
+        for line in (proc.stdout + '\n' + proc.stderr).splitlines():
+            line = line.strip()
+            if line.startswith('__OUTPUT__:'):
+                out_path = line[len('__OUTPUT__:'):].strip()
+                # Windows 路径转回 WSL 路径
+                out_path = _win_to_wsl(out_path)
+                return True, out_path
+
+        err = (proc.stderr.strip() or proc.stdout.strip())[-800:]
+        return False, f'subprocess 导出失败（exit {proc.returncode}）：{err}'
+    except subprocess.TimeoutExpired:
+        return False, 'subprocess 导出超时'
+    except Exception as e:
+        return False, f'subprocess 调用异常：{e}'
+    finally:
+        if tmp_script_wsl and os.path.exists(tmp_script_wsl):
+            os.unlink(tmp_script_wsl)
 
 
 def pt_to_rknnopt(pt_path: str, input_size: tuple, tmp_dir: str):
@@ -117,6 +202,21 @@ def pt_to_rknnopt(pt_path: str, input_size: tuple, tmp_dir: str):
         logger.info(f'[PT→rknnopt] 导出完成：{ts_path}')
         return True, 'PT → rknnopt torchscript 导出成功', ts_path
     except Exception as e:
+        err_msg = str(e)
+        # 版本不兼容（如 DFLoss 缺失）时尝试 subprocess 回退
+        if any(kw in err_msg for kw in ("Can't get attribute", 'DFLoss', 'attribute')):
+            logger.warning(f'[PT→rknnopt] 检测到版本不兼容（{err_msg[:120]}），尝试 subprocess（yolov8-gpu）...')
+            ok, result = _pt_export_subprocess(pt_path, input_size, 'rknn')
+            if ok:
+                ts_path = result
+                # 同样处理路径
+                if os.path.isdir(ts_path):
+                    candidates = glob.glob(os.path.join(ts_path, '*.torchscript'))
+                    ts_path = candidates[0] if candidates else ''
+                if ts_path and os.path.isfile(ts_path):
+                    logger.info(f'[PT→rknnopt] subprocess 导出完成：{ts_path}')
+                    return True, 'PT → rknnopt torchscript 导出成功（via subprocess yolov8-gpu）', ts_path
+            logger.warning(f'[PT→rknnopt] subprocess rknn 导出也失败：{result}，rknnopt 路径放弃')
         return False, f'PT → rknnopt 导出失败：{e}', ''
     finally:
         if inserted and rk_lib in sys.path:
@@ -149,6 +249,20 @@ def pt_to_onnx(pt_path: str, input_size: tuple, tmp_dir: str):
         return True, "PT → ONNX 导出成功", onnx_path
 
     except Exception as e:
+        err_msg = str(e)
+        # 版本不兼容时（如 DFLoss 缺失）回退到 subprocess yolov8-gpu
+        if any(kw in err_msg for kw in ("Can't get attribute", 'DFLoss', 'attribute')):
+            logger.warning(f"[PT→ONNX] 检测到版本不兼容（{err_msg[:120]}），尝试 subprocess（yolov8-gpu）...")
+            ok, result = _pt_export_subprocess(pt_path, input_size, 'onnx')
+            if ok:
+                onnx_path = result
+                if not os.path.exists(onnx_path):
+                    fallback = os.path.splitext(pt_path)[0] + '.onnx'
+                    onnx_path = fallback if os.path.exists(fallback) else onnx_path
+                if os.path.exists(onnx_path):
+                    logger.info(f"[PT→ONNX] subprocess 导出完成：{onnx_path}")
+                    return True, "PT → ONNX 导出成功（via subprocess yolov8-gpu）", onnx_path
+            return False, f"PT → ONNX 导出失败（subprocess 也失败）：{result}", ''
         return False, f"PT → ONNX 导出失败：{e}", ''
 
 

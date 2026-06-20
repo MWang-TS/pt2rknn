@@ -238,10 +238,12 @@ def build_calibration_dataset(
     # 复制图片（若已是相同路径则跳过复制）
     copied_paths = []
     for src in images:
-        dst = os.path.join(images_out, os.path.basename(src))
+        # 文件名含空格会导致 rknn-toolkit2 解析 dataset.txt 时截断路径，统一替换为下划线
+        safe_name = os.path.basename(src).replace(' ', '_')
+        dst = os.path.join(images_out, safe_name)
         # 文件名冲突时加序号
         if os.path.exists(dst) and os.path.abspath(src) != os.path.abspath(dst):
-            base, ext = os.path.splitext(os.path.basename(src))
+            base, ext = os.path.splitext(safe_name)
             dst = os.path.join(images_out, f"{base}_{len(copied_paths)}{ext}")
         if os.path.abspath(src) != os.path.abspath(dst):
             shutil.copy2(src, dst)
