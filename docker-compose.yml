@@ -14,6 +14,8 @@ services:
       - ./calibration_builder.py:/app/calibration_builder.py
       - ./app.py:/app/app.py
       - ./converter.py:/app/converter.py
+      - ./device_ssh.py:/app/device_ssh.py
+      - ./device_validate.py:/app/device_validate.py
       # 挂载上传目录
       - ./uploads:/app/uploads
       # 挂载输出目录
