@@ -86,20 +86,22 @@ def _normalize_path(path):
 normalize_path = _normalize_path
 
 DEFAULT_MAX_IMAGES = 50   # 每次最多取多少张图用于校准
+DEFAULT_RANDOM_SEED = 42
 
 
 # ─────────────────────────────────────────────────────────────
 # 数据集结构探测
 # ─────────────────────────────────────────────────────────────
 
-def _collect_images_recursive(root, max_n=None):
-    """递归收集 root 下所有图片路径（去重，随机打乱）"""
+def _collect_images_recursive(root, max_n=None, seed=DEFAULT_RANDOM_SEED):
+    """递归收集图片，并按固定 seed 生成可复现顺序。"""
     found = []
     for dirpath, _dirs, files in os.walk(root):
         for f in files:
             if any(f.endswith(ext) for ext in IMAGE_EXTS):
                 found.append(os.path.join(dirpath, f))
-    random.shuffle(found)
+    found.sort()
+    random.Random(seed).shuffle(found)
     if max_n:
         found = found[:max_n]
     return found
@@ -169,6 +171,7 @@ def build_calibration_dataset(
     output_dir,
     model_type,
     max_images=DEFAULT_MAX_IMAGES,
+    seed=DEFAULT_RANDOM_SEED,
 ):
     """
     支持 Windows 路径（如 E:\\datasets\\coco）自动转换为 WSL 路径
@@ -202,7 +205,7 @@ def build_calibration_dataset(
         scan_root = dataset_path
 
     # 收集图片
-    images = _collect_images_recursive(scan_root, max_n=max_images)
+    images = _collect_images_recursive(scan_root, max_n=max_images, seed=seed)
     if not images:
         return False, '未找到图片文件', 0
 
@@ -257,7 +260,7 @@ def build_calibration_dataset(
 
     msg = (
         f'✅ 已从 {fmt_desc} 提取 {len(copied_paths)} 张校准图片，'
-        f'生成 dataset.txt'
+        f'生成 dataset.txt（seed={seed}）'
     )
     logger.info(f"[校准] {msg}")
     return True, msg, len(copied_paths)

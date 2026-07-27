@@ -12,6 +12,8 @@ import socket
 import logging
 import threading
 import uuid
+import platform as system_platform
+from importlib import metadata as importlib_metadata
 from flask import Flask, render_template, request, jsonify, send_file, Response
 from flask import stream_with_context
 from werkzeug.utils import secure_filename
@@ -19,6 +21,7 @@ from converter import UniversalConverter, pt_to_onnx
 from model_registry import MODEL_REGISTRY, get_model_types_meta, validate_file_ext, validate_pt_task
 from calibration_builder import build_calibration_dataset, get_calibration_status, detect_dataset_format, normalize_path, link_calibration_dataset
 from inferencer import run_inference, img_to_base64, run_accuracy_analysis
+from device_ssh import run_device_validation, test_connection as device_test_connection, DeviceSSHError
 try:
     import netron
     NETRON_AVAILABLE = True
@@ -126,12 +129,22 @@ if os.path.exists('/.dockerenv'):
 else:
     app.config['CALIBRATION_FOLDER'] = os.path.join(os.path.expanduser('~'), 'pt2rknn_calibration')
 
+app.config['DEVICE_REPORT_FOLDER'] = os.path.join(app.config['OUTPUT_FOLDER'], 'device-validation')
+
 # 确保必要的目录存在
-for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.config['CALIBRATION_FOLDER']]:
+for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'],
+               app.config['CALIBRATION_FOLDER'], app.config['DEVICE_REPORT_FOLDER']]:
     os.makedirs(folder, exist_ok=True)
 
 # 允许的文件扩展名
 ALLOWED_EXTENSIONS = {'pt', 'pth', 'onnx'}
+
+
+def _package_version(package_name):
+    try:
+        return importlib_metadata.version(package_name)
+    except importlib_metadata.PackageNotFoundError:
+        return None
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -257,24 +270,59 @@ def convert_model():
                         tmp_dir=app.config['OUTPUT_FOLDER'],
                     )
                     if _ok:
-                        onnx_out = _onnx
-                        job['q'].put(('log', f'✔ ONNX 已生成：{_onnx}'))
+                        onnx_out = os.path.splitext(output_path)[0] + '.onnx'
+                        if os.path.abspath(_onnx) != os.path.abspath(onnx_out):
+                            os.replace(_onnx, onnx_out)
+                        job['q'].put(('log', f'✔ ONNX 已生成：{onnx_out}'))
                     else:
                         job['q'].put(('log', f'⚠ ONNX 生成失败（{_msg}），x86 推理不可用'))
                 cfg = MODEL_REGISTRY[model_type]
+                conversion = converter.last_result
+                dataset = conversion.get('dataset') or {}
                 meta = {
                     'model_type': model_type,
                     'input_w': input_width, 'input_h': input_height,
-                    'platform': platform, 'quant_type': quant_type,
+                    'platform': platform,
+                    'requested_quant_type': quant_type,
+                    'quant_type': conversion.get('actual_quant_type', quant_type),
                     'class_names': [], 'onnx_path': onnx_out,
                     'mean_values': cfg['mean_values'], 'std_values': cfg['std_values'],
+                    'graph_type': conversion.get('graph_type'),
+                    'conversion_graph_path': conversion.get('conversion_graph_path'),
+                    'dataset_path': dataset.get('path'),
+                    'calibration_image_count': dataset.get('image_count', 0),
+                    'calibration_manifest_sha256': dataset.get('manifest_sha256'),
+                    'quantization_config': conversion.get('quantization_config'),
+                    'source_model_sha256': conversion.get('source_model_sha256'),
+                    'output_count_contract': conversion.get('output_count_contract'),
+                    'class_output_activation': conversion.get('class_output_activation'),
+                    'tool_versions': {
+                        'python': system_platform.python_version(),
+                        'rknn_toolkit2': _package_version('rknn-toolkit2'),
+                        'ultralytics': _package_version('ultralytics'),
+                    },
                 }
                 meta_path = output_path + '.meta.json'
                 try:
                     with open(meta_path, 'w', encoding='utf-8') as mf:
                         json.dump(meta, mf, ensure_ascii=False, indent=2)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    output_stem = os.path.splitext(output_path)[0]
+                    for artifact_path in (
+                        output_path,
+                        meta_path,
+                        output_stem + '.onnx',
+                        output_stem + '.rknnopt.torchscript',
+                    ):
+                        try:
+                            os.remove(artifact_path)
+                        except OSError:
+                            pass
+                    job['q'].put(('done', {
+                        'success': False,
+                        'message': f'RKNN 已生成，但元数据写入失败，已删除不可追溯产物：{exc}',
+                    }))
+                    return
                 job['q'].put(('progress', 100))
                 job['q'].put(('done', {
                     'success': True, 'message': message,
@@ -284,6 +332,17 @@ def convert_model():
             else:
                 job['q'].put(('done', {'success': False, 'message': message}))
         except Exception as e:
+            output_stem = os.path.splitext(output_path)[0]
+            for artifact_path in (
+                output_path,
+                output_path + '.meta.json',
+                output_stem + '.onnx',
+                output_stem + '.rknnopt.torchscript',
+            ):
+                try:
+                    os.remove(artifact_path)
+                except OSError:
+                    pass
             job['q'].put(('done', {'success': False, 'message': f'转换失败: {e}'}))
         finally:
             job['done'] = True
@@ -356,6 +415,7 @@ def calibration_prepare():
     model_type  = data.get('model_type', '')
     dataset_path = data.get('dataset_path', '').strip()
     max_images  = int(data.get('max_images', 50))
+    seed = int(data.get('seed', 42))
 
     if model_type not in MODEL_REGISTRY:
         return jsonify({'success': False, 'message': '未知模型类型'}), 400
@@ -377,6 +437,7 @@ def calibration_prepare():
             output_dir=output_dir,
             model_type=model_type,
             max_images=max_images,
+            seed=seed,
         )
     except Exception as e:
         import traceback
@@ -559,7 +620,7 @@ def infer_model():
 
 @app.route('/api/accuracy', methods=['POST'])
 def accuracy_analysis_endpoint():
-    """量化精度分析：对比 ONNX 与 RKNN 逐层输出，返回余弦相似度报告"""
+    """转换图误差分析：使用转换时相同图和校准清单重建分析模型。"""
     try:
         if 'image' not in request.files:
             return jsonify({'success': False, 'message': '未上传图片'}), 400
@@ -578,10 +639,11 @@ def accuracy_analysis_endpoint():
             with open(meta_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
 
-        onnx_path = meta.get('onnx_path', '')
-        if not onnx_path or not os.path.exists(onnx_path):
+        graph_path = meta.get('conversion_graph_path', '')
+        graph_type = meta.get('graph_type', 'onnx')
+        if not graph_path or not os.path.exists(graph_path):
             return jsonify({'success': False,
-                            'message': 'ONNX 文件不存在，请重新转换以生成配套 ONNX'}), 404
+                            'message': '转换图不存在，请使用新版工具重新转换模型'}), 404
 
         input_w    = int(meta.get('input_w', 640))
         input_h    = int(meta.get('input_h', 640))
@@ -601,6 +663,11 @@ def accuracy_analysis_endpoint():
             ds = meta.get('dataset_path', '')
             if ds and os.path.exists(ds):
                 dataset_path = ds
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '原始校准清单不存在，拒绝使用单张测试图临时校准',
+                }), 409
 
         import numpy as np
         import cv2
@@ -610,7 +677,8 @@ def accuracy_analysis_endpoint():
             return jsonify({'success': False, 'message': '无法解码图片'}), 400
 
         result = run_accuracy_analysis(
-            onnx_path=onnx_path,
+            model_path=graph_path,
+            graph_type=graph_type,
             img_bgr=img_bgr,
             input_w=input_w,
             input_h=input_h,
@@ -619,6 +687,7 @@ def accuracy_analysis_endpoint():
             platform=platform,
             do_quantization=do_quant,
             dataset_path=dataset_path,
+            quantization_config=meta.get('quantization_config') if do_quant else None,
         )
         return jsonify({'success': True, **result})
 
@@ -643,16 +712,21 @@ def download_file(filename):
 
 @app.route('/api/delete/<filename>', methods=['DELETE'])
 def delete_output(filename):
-    """删除单个转换输出文件（.rknn + .meta.json）"""
+    """删除单个转换输出及其元数据和转换图。"""
     try:
         output_folder = app.config['OUTPUT_FOLDER']
         file_path = os.path.join(output_folder, filename)
         if not os.path.exists(file_path):
             return jsonify({'success': False, 'message': '文件不存在'}), 404
-        os.remove(file_path)
-        meta_path = file_path + '.meta.json'
-        if os.path.exists(meta_path):
-            os.remove(meta_path)
+        output_stem = os.path.splitext(file_path)[0]
+        for artifact_path in (
+            file_path,
+            file_path + '.meta.json',
+            output_stem + '.onnx',
+            output_stem + '.rknnopt.torchscript',
+        ):
+            if os.path.exists(artifact_path):
+                os.remove(artifact_path)
         return jsonify({'success': True, 'message': f'{filename} 已删除'})
     except Exception as e:
         return jsonify({'success': False, 'message': f'删除失败: {str(e)}'}), 500
@@ -660,18 +734,226 @@ def delete_output(filename):
 
 @app.route('/api/outputs/clear', methods=['POST'])
 def clear_outputs():
-    """清空全部转换历史（output 目录下所有 .rknn 和 .meta.json）"""
+    """清空全部转换历史及配套转换图。"""
     try:
         output_folder = app.config['OUTPUT_FOLDER']
         removed = 0
         for fname in os.listdir(output_folder):
-            if fname.endswith('.rknn') or fname.endswith('.meta.json') or fname.endswith('.onnx'):
+            if fname.endswith(('.rknn', '.meta.json', '.onnx', '.rknnopt.torchscript')):
                 os.remove(os.path.join(output_folder, fname))
                 removed += 1
         return jsonify({'success': True, 'message': f'已清空 {removed} 个文件'})
     except Exception as e:
         return jsonify({'success': False, 'message': f'清空失败: {str(e)}'}), 500
 
+
+
+@app.route('/api/device/test-connection', methods=['POST'])
+def device_test_connection_endpoint():
+    """快速测试与局域网 RK35xx 设备的 SSH 连接，不做任何文件传输。"""
+    data = request.get_json(silent=True) or {}
+    host = (data.get('host') or '').strip()
+    port = data.get('port') or 22
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or None
+    key_text = data.get('key_text') or None
+    key_passphrase = data.get('key_passphrase') or None
+
+    if not host or not username:
+        return jsonify({'success': False, 'message': '请提供设备地址和用户名'}), 400
+    if not password and not key_text:
+        return jsonify({'success': False, 'message': '请提供密码或私钥'}), 400
+
+    try:
+        info = device_test_connection(host, port, username, password, key_text, key_passphrase)
+        return jsonify({'success': True, **info})
+    except DeviceSSHError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'连接测试失败：{e}'}), 500
+
+
+@app.route('/api/device/validate', methods=['POST'])
+def device_validate_endpoint():
+    """启动异步设备验收任务（SSH 上传模型+脚本+图片，远程执行，下载报告），返回 job_id。"""
+    data = request.get_json(silent=True) or {}
+
+    rknn_filename = secure_filename(data.get('rknn_filename', ''))
+    if not rknn_filename or not rknn_filename.endswith('.rknn'):
+        return jsonify({'success': False, 'message': '未指定 RKNN 文件名'}), 400
+    model_path = os.path.join(app.config['OUTPUT_FOLDER'], rknn_filename)
+    if not os.path.exists(model_path):
+        return jsonify({'success': False, 'message': 'RKNN 文件不存在'}), 404
+
+    host = (data.get('host') or '').strip()
+    port = data.get('port') or 22
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or None
+    key_text = data.get('key_text') or None
+    key_passphrase = data.get('key_passphrase') or None
+    if not host or not username:
+        return jsonify({'success': False, 'message': '请提供设备地址和用户名'}), 400
+    if not password and not key_text:
+        return jsonify({'success': False, 'message': '请提供密码或私钥'}), 400
+
+    images_mode = data.get('images_mode') or 'upload'
+    if images_mode not in ('upload', 'remote_path'):
+        return jsonify({'success': False, 'message': 'images_mode 必须是 upload 或 remote_path'}), 400
+
+    local_images_dir = None
+    remote_images_path = None
+    if images_mode == 'upload':
+        local_images_dir = normalize_path((data.get('local_images_dir') or '').strip())
+        if not local_images_dir or not os.path.isdir(local_images_dir):
+            return jsonify({'success': False, 'message': '本地验证图片目录不存在'}), 400
+    else:
+        remote_images_path = (data.get('remote_images_path') or '').strip()
+        if not remote_images_path:
+            return jsonify({'success': False, 'message': '请提供设备上已有的图片目录路径'}), 400
+
+    meta_path = model_path + '.meta.json'
+    meta = {}
+    if os.path.exists(meta_path):
+        with open(meta_path, 'r', encoding='utf-8') as mf:
+            meta = json.load(mf)
+
+    classes = data.get('classes')
+    if classes is None:
+        classes = ','.join(meta.get('class_names') or [])
+    width = int(data.get('width') or meta.get('input_w') or 640)
+    height = int(data.get('height') or meta.get('input_h') or 640)
+    conf = float(data.get('conf', 0.001))
+    iou = float(data.get('iou', 0.65))
+    warmup = int(data.get('warmup', 3))
+    remote_workdir = (data.get('remote_workdir') or '~/pt2rknn-device-validate').strip()
+    remote_python = (data.get('remote_python') or 'python3').strip()
+
+    job_id = uuid.uuid4().hex[:10]
+    job = {'q': queue.Queue(), 'thread_id': None, 'done': False}
+    with _jobs_lock:
+        _jobs[job_id] = job
+
+    def _run():
+        job['thread_id'] = threading.current_thread().ident
+        job['q'].put(('log', f'▶ 设备验收任务开始：{rknn_filename} → {username}@{host}:{port}'))
+        try:
+            result = run_device_validation(
+                host=host, port=port, username=username,
+                password=password, key_text=key_text, key_passphrase=key_passphrase,
+                model_path=model_path,
+                script_dir=os.path.dirname(os.path.abspath(__file__)),
+                images_mode=images_mode,
+                local_images_dir=local_images_dir,
+                remote_images_path=remote_images_path,
+                remote_workdir=remote_workdir,
+                remote_python=remote_python,
+                classes=classes,
+                width=width, height=height,
+                conf=conf, iou=iou, warmup=warmup,
+                local_report_dir=app.config['DEVICE_REPORT_FOLDER'],
+                log_cb=lambda msg: job['q'].put(('log', msg)),
+            )
+            if result['success']:
+                job['q'].put(('done', {
+                    'success': True,
+                    'message': result['message'],
+                    'report': result['report'],
+                    'report_filename': os.path.basename(result['local_report_path']),
+                    'model_sha256_local': result['model_sha256_local'],
+                    'model_sha256_match': result['model_sha256_match'],
+                    'remote_task_dir': result.get('remote_task_dir'),
+                    'remote_host': f'{username}@{host}',
+                }))
+            else:
+                job['q'].put(('done', {
+                    'success': False,
+                    'message': result['message'],
+                    'remote_task_dir': result.get('remote_task_dir'),
+                    'remote_host': f'{username}@{host}',
+                }))
+        except DeviceSSHError as e:
+            job['q'].put(('done', {'success': False, 'message': str(e)}))
+        except Exception as e:
+            job['q'].put(('done', {'success': False, 'message': f'设备验收失败：{e}'}))
+        finally:
+            job['done'] = True
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({'started': True, 'job_id': job_id})
+
+
+@app.route('/api/device/validate/log/<job_id>')
+def device_validate_log(job_id):
+    """SSE 端点：流式推送设备验收日志和结果，复用转换任务的事件队列机制。"""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if not job:
+        return jsonify({'error': '任务不存在'}), 404
+
+    def generate():
+        while True:
+            try:
+                event_type, data = job['q'].get(timeout=25)
+                payload = json.dumps({'type': event_type, 'data': data}, ensure_ascii=False)
+                yield 'data: ' + payload + '\n\n'
+                if event_type == 'done':
+                    break
+            except queue.Empty:
+                yield 'data: ' + json.dumps({'type': 'ping'}) + '\n\n'
+                if job['done']:
+                    break
+        def _cleanup():
+            time.sleep(60)
+            with _jobs_lock:
+                _jobs.pop(job_id, None)
+        threading.Thread(target=_cleanup, daemon=True).start()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
+
+
+@app.route('/api/device/reports', methods=['GET'])
+def list_device_reports():
+    """列出已下载到本地的设备验收报告。"""
+    try:
+        report_folder = app.config['DEVICE_REPORT_FOLDER']
+        files = []
+        for filename in os.listdir(report_folder):
+            if not filename.endswith('.json'):
+                continue
+            file_path = os.path.join(report_folder, filename)
+            file_time = os.path.getmtime(file_path)
+            summary = {}
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    report = json.load(f)
+                summary = report.get('summary', {})
+            except Exception:
+                pass
+            files.append({
+                'filename': filename,
+                'time': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_time)),
+                'summary': summary,
+            })
+        files.sort(key=lambda x: x['time'], reverse=True)
+        return jsonify({'success': True, 'files': files})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'获取设备报告列表失败: {str(e)}'}), 500
+
+
+@app.route('/api/device/reports/<filename>', methods=['GET'])
+def get_device_report(filename):
+    """读取指定设备验收报告的完整内容。"""
+    file_path = os.path.join(app.config['DEVICE_REPORT_FOLDER'], secure_filename(filename))
+    if not os.path.exists(file_path):
+        return jsonify({'success': False, 'message': '报告不存在'}), 404
+    with open(file_path, 'r', encoding='utf-8') as f:
+        report = json.load(f)
+    return jsonify({'success': True, 'report': report})
 
 
 @app.route('/api/outputs', methods=['GET'])

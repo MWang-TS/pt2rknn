@@ -18,7 +18,7 @@ MODEL_REGISTRY = {
         'input_size_default': [640, 640],
         'mean_values': [[0, 0, 0]],
         'std_values': [[255, 255, 255]],
-        'calibration_subdir': 'coco',
+        'calibration_subdir': 'yolov8_det',
         'hint': '上传 YOLOv8/YOLOv5 等目标检测 .pt 或导出的 .onnx'
     },
     'yolov8_seg': {
@@ -32,7 +32,7 @@ MODEL_REGISTRY = {
         'input_size_default': [640, 640],
         'mean_values': [[0, 0, 0]],
         'std_values': [[255, 255, 255]],
-        'calibration_subdir': 'coco',
+        'calibration_subdir': 'yolov8_seg',
         'hint': '上传 yolov8n-seg.pt / yolov8m-seg.pt 或对应 .onnx'
     },
     'yolov8_pose': {
@@ -46,7 +46,7 @@ MODEL_REGISTRY = {
         'input_size_default': [640, 640],
         'mean_values': [[0, 0, 0]],
         'std_values': [[255, 255, 255]],
-        'calibration_subdir': 'coco',
+        'calibration_subdir': 'yolov8_pose',
         'hint': '上传 yolov8n-pose.pt / yolov8m-pose.pt 或对应 .onnx'
     },
     'yolov8_obb': {
@@ -60,7 +60,7 @@ MODEL_REGISTRY = {
         'input_size_default': [1024, 1024],
         'mean_values': [[0, 0, 0]],
         'std_values': [[255, 255, 255]],
-        'calibration_subdir': 'coco',
+        'calibration_subdir': 'yolov8_obb',
         'hint': '上传 yolov8n-obb.pt 或对应 .onnx（DOTA 数据集训练）'
     },
 

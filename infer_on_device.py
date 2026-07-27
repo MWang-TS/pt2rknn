@@ -210,7 +210,7 @@ def postprocess_det(outputs, img_bgr, scale, pad_x, pad_y, conf, iou, names,
         cv2.rectangle(result, (x1r, y1r - 18), (x1r + len(txt) * 9, y1r), color, -1)
         cv2.putText(result, txt, (x1r + 2, y1r - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
-        dets.append({'label': label, 'score': float(score),
+        dets.append({'class_id': int(cid), 'label': label, 'score': float(score),
                      'box': [x1r, y1r, x2r, y2r]})
 
     summary = f'检测到 {len(dets)} 个目标'

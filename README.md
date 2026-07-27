@@ -1,4 +1,4 @@
-# PT → RKNN 多模型转换工具 🚀 `v0.0.1`
+# PT → RKNN 多模型转换工具 🚀 `v0.0.3`
 
 一个基于 Web 界面的模型转换工具，将 PyTorch (.pt/.pth) 或 ONNX 模型转换为 RKNN 格式，专为 Rockchip NPU 设备优化。
 
@@ -11,7 +11,7 @@
 - 📡 **实时日志流** — 转换过程通过 SSE 实时推送日志与进度条
 - 📊 **INT8 校准数据集准备** — 指定训练数据路径，工具自动探测格式、提取图片、生成 dataset.txt
 - 👁️ **Netron 预览** — 在线可视化 RKNN / ONNX 模型结构
-- 📦 **历史记录** — 查看、推理测试、单条删除或一键清空所有转换结果
+- 📦 **历史记录** — 查看、电脑端 ONNX 基线、转换图误差分析、单条删除或一键清空转换结果
 
 ---
 
@@ -19,10 +19,10 @@
 
 | 类型 | 图标 | 接受格式 | 默认输入尺寸 | 校准数据目录 |
 |------|------|----------|-------------|-------------|
-| YOLOv8-Det | 🎯 | .pt / .onnx | 640×640 | `calibration_data/coco/` |
-| YOLOv8-Seg | ✂️ | .pt / .onnx | 640×640 | `calibration_data/coco/` |
-| YOLOv8-Pose | 🤸 | .pt / .onnx | 640×640 | `calibration_data/coco/` |
-| YOLOv8-OBB | 🔷 | .pt / .onnx | 640×640 | `calibration_data/coco/` |
+| YOLOv8-Det | 🎯 | .pt / .onnx | 640×640 | `calibration_data/yolov8_det/` |
+| YOLOv8-Seg | ✂️ | .pt / .onnx | 640×640 | `calibration_data/yolov8_seg/` |
+| YOLOv8-Pose | 🤸 | .pt / .onnx | 640×640 | `calibration_data/yolov8_pose/` |
+| YOLOv8-OBB | 🔷 | .pt / .onnx | 640×640 | `calibration_data/yolov8_obb/` |
 | ResNet | 🧱 | .onnx | 224×224 | `calibration_data/imagenet/` |
 | RetinaFace | 👤 | .onnx | 640×640 | `calibration_data/face/` |
 
@@ -150,13 +150,16 @@ pt2rknn_tool/
 ├── converter.py             # 转换引擎（UniversalConverter）
 ├── model_registry.py        # 6 种网络类型配置注册表
 ├── calibration_builder.py   # 校准数据集自动构建工具
+├── infer_on_device.py       # RK35xx 设备端单图推理
+├── device_validate.py       # RK35xx YOLOv8-Det 批量验收报告
+├── IMPLEMENTATION_PLAN.md   # 转换、迁移和验收执行方案
 ├── requirements.txt
 ├── templates/
 │   └── index.html           # 前端（多步骤卡片 UI）
 ├── uploads/                 # 上传临时目录
-├── outputs/                 # RKNN 输出目录
+├── output/                  # RKNN、元数据和转换图输出目录
 └── calibration_data/        # INT8 校准图片目录
-    ├── coco/
+    ├── yolov8_det/
     │   ├── images/          # 放校准图片（或由工具自动提取）
     │   └── dataset.txt      # 工具生成
     ├── imagenet/
@@ -171,7 +174,7 @@ pt2rknn_tool/
 
 ## 📊 INT8 校准数据集
 
-INT8 量化需要一批代表性图片用于校准，否则自动回退到 FP16。
+INT8 量化需要一批代表性图片用于校准。校准集缺失时转换直接失败，不会生成名称与实际精度不符的 FP 产物。
 
 ### 方式一：通过 UI 自动准备（推荐）
 
@@ -195,8 +198,8 @@ INT8 量化需要一批代表性图片用于校准，否则自动回退到 FP16�
 将图片直接复制到对应的 `calibration_data/<类型>/images/` 目录（无需 dataset.txt，工具启动时自动检测）：
 
 ```bash
-# 示例：为 YOLOv8 类型准备 COCO 校准图片
-cp /your/coco/val2017/*.jpg calibration_data/coco/images/
+# 示例：为 YOLOv8 目标检测准备校准图片
+cp /your/dataset/images/*.jpg calibration_data/yolov8_det/images/
 ```
 
 ---
@@ -217,7 +220,24 @@ cp /your/coco/val2017/*.jpg calibration_data/coco/images/
 | GET  | `/api/download/<filename>` | 下载 RKNN 文件 |
 | DELETE | `/api/delete/<filename>` | 删除单个 RKNN 及其元数据 |
 | POST | `/api/outputs/clear` | 清空全部转换历史 |
-| POST | `/api/infer` | 在服务端（x86 模拟器）执行推理测试 |
+| POST | `/api/infer` | 在电脑端执行 ONNX FP 基线推理，不代表最终 RKNN 效果 |
+| POST | `/api/accuracy` | 复用转换图和校准清单进行误差分析，不代表真机最终精度 |
+| POST | `/api/device/test-connection` | 测试与局域网 RK35xx 设备的 SSH 连接 |
+| POST | `/api/device/validate` | 通过 SSH 上传模型+脚本+图片，在真机上执行验收（返回 job_id）|
+| GET  | `/api/device/validate/log/<job_id>` | SSE 实时流式获取设备验收日志与结果 |
+| GET  | `/api/device/reports` | 获取已下载到本地的设备验收报告列表 |
+| GET  | `/api/device/reports/<filename>` | 获取指定设备验收报告的完整内容 |
+
+### 🔧 真机设备验收（SSH）
+
+历史列表每个模型卡片新增「🔧 设备验收」按钮，可直接从 Web UI 通过 SSH 连接局域网内的 RK35xx 设备完成端到端验收，无需手动 scp/ssh：
+
+1. 填写设备 IP、SSH 端口、用户名，选择密码或私钥认证并测试连接。
+2. 选择图片来源：从本机上传验证图片目录，或直接使用设备上已有的图片目录。
+3. 填写类别名称（留空则自动读取模型的 `.meta.json`）、置信度/IoU 阈值、NPU 预热次数。
+4. 点击「开始设备验收」，工具会自动：上传 `.rknn` 模型、设备端脚本（`infer_on_device.py` / `device_validate.py`）与图片 → 远程执行批量推理 → 下载 JSON 验收报告到 `output/device-validation/` → 校验模型 SHA256 是否与本地一致。
+
+⚠️ **安全提示**：密码/私钥仅用于建立本次 SSH 连接，不会被服务端持久化存储；该功能默认信任目标主机公钥（TOFU），仅建议在受控局域网内使用。当前 Web 服务本身未做任何身份鉴权，请勿将其暴露到公网。
 
 ---
 
@@ -225,12 +245,26 @@ cp /your/coco/val2017/*.jpg calibration_data/coco/images/
 
 - YOLOv8 `.pt` 转换需要 `ultralytics`，内部先 export 为 ONNX（opset 12）再转 RKNN
 - ResNet / RetinaFace 仅接受 `.onnx` 输入（无 ultralytics 依赖）
-- INT8 Without calibration data → 自动 fallback 到 FP16，转换日志会有提示
+- INT8 缺少有效校准集时转换直接失败，不会自动回退到 FP16
+- 最终 RKNN 精度和性能须在 RK35xx 设备端验收；执行步骤见 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
+- `device_validate.py` 当前仅支持 YOLOv8-Det 批量预测与延迟报告
 - Netron 预览需要安装 `netron`：`pip install netron`
 
 ---
 
 ## 📝 版本历史
+
+### v0.0.3 (2026-07-27)
+
+- **RK35xx 真机验收**：新增 `device_ssh.py` / `device_validate.py`，通过 SSH/SFTP 连接局域网设备，上传模型和验收脚本、远程批量推理、下载 JSON 报告并校验模型哈希
+- **NPU 权限预检**：连接设备时自动检测 `/dev/dri/by-path/*npu*` 节点可访问性，权限不足时给出明确提示，避免误判为驱动缺失
+- **设备端目录持久展示**：验收摘要卡片新增“设备端目录”字段（`user@host:path`），不再只依赖滚动日志
+- **转换结果可追溯**：新增源模型 SHA256、校准数据集清单哈希、量化参数（`quantized_algorithm` / `quantized_method` / `optimization_level`）记录，写入转换元数据
+- **INT8 转换不再静默回退 FP16**：缺少校准数据集时直接失败并报错，避免用户误以为量化生效
+- **校准数据采样可复现**：`calibration_builder.py` 增加固定随机种子（`seed=42`），同一数据集多次采样结果一致
+- **精度分析支持 rknnopt TorchScript**：`run_accuracy_analysis` 除 ONNX 外新增支持 rknnopt 转换图，分析结果标注所用转换图类型
+- 修复 `model_registry.py` 中 YOLOv8-Det 校准子目录错误（`coco` → `yolov8_det`）
+- 新增依赖 `paramiko==3.4.1`（设备 SSH 验收）
 
 ### v0.0.2 (2026-06-11)
 

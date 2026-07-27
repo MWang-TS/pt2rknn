@@ -1023,16 +1023,17 @@ def _parse_accuracy_output(output_dir):
     }
 
 
-def run_accuracy_analysis(onnx_path, img_bgr, input_w, input_h,
+def run_accuracy_analysis(model_path, img_bgr, input_w, input_h,
                           mean_values=None, std_values=None,
                           platform='rk3576', do_quantization=False,
-                          dataset_path=None):
+                          dataset_path=None, graph_type='onnx',
+                          quantization_config=None):
     """
     使用 rknn-toolkit2 accuracy_analysis() 逐层对比 ONNX 与 RKNN 输出误差。
 
     参数
     ----
-    onnx_path        : str  — ONNX 模型路径
+    model_path       : str  — 转换时实际使用的 ONNX 或 rknnopt TorchScript
     img_bgr          : ndarray — BGR 原始测试图（会自动 letterbox）
     input_w/h        : int
     mean_values      : list  — config mean（同转换时）
@@ -1049,6 +1050,11 @@ def run_accuracy_analysis(onnx_path, img_bgr, input_w, input_h,
     import tempfile
     from rknn.api import RKNN
 
+    if do_quantization and not dataset_path:
+        raise RuntimeError('INT8 分析必须使用转换时的原始校准清单')
+    if graph_type not in ('onnx', 'rknnopt_torchscript'):
+        raise RuntimeError(f'不支持的转换图类型：{graph_type}')
+
     img_lb, _, _, _ = letterbox(img_bgr, input_w, input_h)   # uint8 RGB HWC
 
     mv = mean_values if mean_values else [[0, 0, 0]]
@@ -1058,34 +1064,36 @@ def run_accuracy_analysis(onnx_path, img_bgr, input_w, input_h,
         accuracy_dir = os.path.join(tmp_dir, 'accuracy')
         os.makedirs(accuracy_dir, exist_ok=True)
 
-        # 若 do_quantization=True 但没有 dataset，用当前图片生成单图数据集
-        if do_quantization and not dataset_path:
-            tmp_img_path = os.path.join(tmp_dir, 'calib_img.jpg')
-            cv2.imwrite(tmp_img_path, img_bgr)
-            tmp_ds_path = os.path.join(tmp_dir, 'dataset.txt')
-            with open(tmp_ds_path, 'w') as f:
-                f.write(tmp_img_path + '\n')
-            dataset_path = tmp_ds_path
-
         # accuracy_analysis expects NCHW float32: (1, C, H, W)
         img_nchw = img_lb.transpose(2, 0, 1)[np.newaxis, :]   # (1, 3, H, W)
 
         rknn = RKNN(verbose=False)
         try:
+            config_args = {
+                'mean_values': mv,
+                'std_values': sv,
+                'target_platform': platform,
+            }
+            if quantization_config:
+                config_args.update(quantization_config)
             ret = rknn.config(
-                mean_values=mv,
-                std_values=sv,
-                target_platform=platform,
+                **config_args,
             )
             if ret != 0:
                 raise RuntimeError(f'RKNN config 失败，返回码 {ret}')
 
-            ret = rknn.load_onnx(
-                model=onnx_path,
-                input_size_list=[[1, 3, input_h, input_w]],
-            )
+            if graph_type == 'rknnopt_torchscript':
+                ret = rknn.load_pytorch(
+                    model=model_path,
+                    input_size_list=[[1, 3, input_h, input_w]],
+                )
+            else:
+                ret = rknn.load_onnx(
+                    model=model_path,
+                    input_size_list=[[1, 3, input_h, input_w]],
+                )
             if ret != 0:
-                raise RuntimeError(f'load_onnx 失败，返回码 {ret}')
+                raise RuntimeError(f'加载转换图失败，返回码 {ret}')
 
             if do_quantization:
                 ret = rknn.build(do_quantization=True, dataset=dataset_path)
@@ -1108,5 +1116,8 @@ def run_accuracy_analysis(onnx_path, img_bgr, input_w, input_h,
             rknn.release()
 
         result = _parse_accuracy_output(accuracy_dir)
-        result['quant_mode'] = 'INT8 量化对比' if do_quantization else 'FP 浮点对比（验证算子转换）'
+        graph_label = 'rknnopt TorchScript' if graph_type == 'rknnopt_torchscript' else 'ONNX'
+        mode_label = 'INT8 重建分析' if do_quantization else 'FP 算子转换分析'
+        result['quant_mode'] = f'{mode_label} · {graph_label}'
+        result['analysis_scope'] = '使用同一转换图重建分析模型；不是 RK35xx 真机最终精度'
         return result

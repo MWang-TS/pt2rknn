@@ -11,6 +11,8 @@ import json
 import logging
 import subprocess
 import tempfile
+import hashlib
+import shutil
 
 from model_registry import MODEL_REGISTRY
 
@@ -19,6 +21,33 @@ _WIN_YOLO_PYTHON = '/mnt/e/Anaconda3/envs/yolov8-gpu/python.exe'
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
+
+QUANT_CONFIG = {
+    'quantized_algorithm': 'normal',
+    'quantized_method': 'channel',
+    'optimization_level': 3,
+}
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, 'rb') as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _dataset_manifest(dataset_path: str):
+    if not dataset_path:
+        return None
+    with open(dataset_path, 'r', encoding='utf-8') as file_obj:
+        images = [line.strip() for line in file_obj if line.strip()]
+    digest = hashlib.sha256('\n'.join(images).encode('utf-8')).hexdigest()
+    return {
+        'path': os.path.abspath(dataset_path),
+        'image_count': len(images),
+        'manifest_sha256': digest,
+    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -286,6 +315,7 @@ def onnx_to_rknn(onnx_path, output_path, platform, do_quant,
             mean_values=mean_values,
             std_values=std_values,
             target_platform=platform,
+            **QUANT_CONFIG,
         )
         if ret != 0:
             return False, f"RKNN config 失败，ret={ret}"
@@ -299,11 +329,11 @@ def onnx_to_rknn(onnx_path, output_path, platform, do_quant,
             return False, f"加载 ONNX 失败，ret={ret}"
 
         logger.info(f"[ONNX→RKNN] 构建 RKNN 模型 (do_quant={do_quant}) ...")
-        if do_quant and dataset_path:
+        if do_quant:
+            if not dataset_path:
+                return False, "INT8 转换缺少校准数据集"
             ret = rknn.build(do_quantization=True, dataset=dataset_path)
         else:
-            if do_quant and not dataset_path:
-                logger.warning("缺少校准数据集，将回退到 FP16 模式")
             ret = rknn.build(do_quantization=False)
         if ret != 0:
             return False, f"RKNN build 失败，ret={ret}"
@@ -333,7 +363,7 @@ def torchscript_to_rknn(ts_path, output_path, platform, do_quant,
     rknn = RKNN(verbose=verbose)
     try:
         ret = rknn.config(mean_values=mean_values, std_values=std_values,
-                          target_platform=platform)
+                  target_platform=platform, **QUANT_CONFIG)
         if ret != 0:
             return False, f'RKNN config 失败，ret={ret}'
 
@@ -344,11 +374,11 @@ def torchscript_to_rknn(ts_path, output_path, platform, do_quant,
             return False, f'load_pytorch 失败，ret={ret}'
 
         logger.info(f'[TS→RKNN] 构建 RKNN 模型 (do_quant={do_quant}) ...')
-        if do_quant and dataset_path:
+        if do_quant:
+            if not dataset_path:
+                return False, 'INT8 转换缺少校准数据集'
             ret = rknn.build(do_quantization=True, dataset=dataset_path)
         else:
-            if do_quant and not dataset_path:
-                logger.warning('缺少校准数据集，将回退到 FP16 模式')
             ret = rknn.build(do_quantization=False)
         if ret != 0:
             return False, f'RKNN build 失败，ret={ret}'
@@ -367,9 +397,11 @@ def torchscript_to_rknn(ts_path, output_path, platform, do_quant,
 class UniversalConverter:
     def __init__(self, verbose=False):
         self.verbose = verbose
+        self.last_result = {}
 
     def convert(self, model_type, input_path, platform, do_quant,
                 calibration_dir, output_path, input_size=(640, 640)):
+        self.last_result = {}
         if model_type not in MODEL_REGISTRY:
             return False, f"未知模型类型：{model_type}", ''
 
@@ -378,6 +410,23 @@ class UniversalConverter:
         onnx_path = None
         tmp_onnx = None
         steps = []
+        dataset_path = None
+
+        if do_quant:
+            dataset_path = _resolve_dataset(calibration_dir, cfg['calibration_subdir'])
+            if not dataset_path:
+                return False, (
+                    f"INT8 转换失败：未找到 {cfg['calibration_subdir']} 校准数据集。"
+                    "请先准备校准集，或明确选择 FP 模式。"
+                ), ''
+
+        base_result = {
+            'requested_quant_type': 'i8' if do_quant else 'fp',
+            'actual_quant_type': 'i8' if do_quant else 'fp',
+            'dataset': _dataset_manifest(dataset_path),
+            'quantization_config': dict(QUANT_CONFIG) if do_quant else None,
+            'source_model_sha256': _sha256_file(input_path),
+        }
 
         try:
             if ext in ('.pt', '.pth'):
@@ -398,7 +447,7 @@ class UniversalConverter:
                         output_path=output_path,
                         platform=platform,
                         do_quant=do_quant,
-                        dataset_path=_resolve_dataset(calibration_dir, cfg['calibration_subdir']) if do_quant else None,
+                        dataset_path=dataset_path,
                         mean_values=cfg['mean_values'],
                         std_values=cfg['std_values'],
                         input_size=input_size,
@@ -407,6 +456,15 @@ class UniversalConverter:
                     steps.append(f"rknnopt torchscript → RKNN：{msg2}")
                     if not ok2:
                         return False, '\n'.join(steps), ''
+                    graph_path = os.path.splitext(output_path)[0] + '.rknnopt.torchscript'
+                    shutil.copy2(ts_path_val, graph_path)
+                    self.last_result = {
+                        **base_result,
+                        'graph_type': 'rknnopt_torchscript',
+                        'conversion_graph_path': os.path.abspath(graph_path),
+                        'output_count_contract': 'split_head',
+                        'class_output_activation': 'probability',
+                    }
                     return True, '\n'.join(steps), ''
                 else:
                     logger.warning(f'[convert] rknnopt 失败（{ts_msg}），回退到标准 ONNX')
@@ -427,15 +485,6 @@ class UniversalConverter:
             else:
                 return False, f"不支持的文件格式：{ext}", ''
 
-            dataset_path = None
-            if do_quant:
-                dataset_path = _resolve_dataset(calibration_dir, cfg['calibration_subdir'])
-                if not dataset_path:
-                    do_quant = False
-                    steps.append(
-                        f"⚠️ 未找到 {cfg['calibration_subdir']} 校准数据集，已回退为 FP16"
-                    )
-
             logger.info("开始 ONNX → RKNN 转换...")
             ok, msg = onnx_to_rknn(
                 onnx_path=onnx_path,
@@ -452,7 +501,6 @@ class UniversalConverter:
 
             if ok:
                 # 将 ONNX 复制到 output 目录旁边，供 simulator 推理使用
-                import shutil
                 onnx_out = os.path.splitext(output_path)[0] + '.onnx'
                 try:
                     shutil.copy2(onnx_path, onnx_out)
@@ -460,6 +508,13 @@ class UniversalConverter:
                 except Exception as e:
                     onnx_out = ''
                     logger.warning(f"保存 ONNX 失败：{e}")
+                self.last_result = {
+                    **base_result,
+                    'graph_type': 'onnx',
+                    'conversion_graph_path': os.path.abspath(onnx_out) if onnx_out else '',
+                    'output_count_contract': 'onnx_export',
+                    'class_output_activation': 'probability',
+                }
                 return True, '\n'.join(steps), onnx_out
             else:
                 return False, msg, ''

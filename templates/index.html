@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PT → RKNN 多模型转换工具 v0.0.1</title>
+<title>PT → RKNN 多模型转换工具 v0.0.3</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px}
@@ -122,6 +122,19 @@ select:focus,input:focus{border-color:#667eea}
 .infer-summary{background:#f8f9ff;border-radius:8px;padding:12px 14px;font-size:.83em;font-family:monospace;white-space:pre-wrap;margin-top:10px;color:#333;max-height:200px;overflow-y:auto}
 .infer-meta-tag{font-size:.75em;background:#e0e5ff;color:#667eea;padding:2px 8px;border-radius:20px;margin-left:6px}
 .dlb.orange{background:#fd7e14;color:#fff}
+.dlb.teal{background:#17a2b8;color:#fff}
+/* ── 设备验收 Modal ── */
+.device-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto}
+.device-modal{background:#fff;border-radius:16px;width:100%;max-width:640px;margin:auto;box-shadow:0 12px 40px rgba(0,0,0,.25);overflow:hidden}
+.device-modal-header{background:linear-gradient(135deg,#11998e,#38ef7d);color:#fff;padding:16px 20px;display:flex;align-items:center;justify-content:space-between}
+.device-modal-header h3{margin:0;font-size:1em}
+.device-modal-body{padding:20px;max-height:75vh;overflow-y:auto}
+.device-radio-row{display:flex;gap:16px;margin-bottom:12px;font-size:.86em;color:#444}
+.device-radio-row label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.device-hint{font-size:.78em;color:#e67700;background:#fff8e1;border-left:3px solid #ffc107;padding:7px 10px;border-radius:0 6px 6px 0;margin-bottom:12px}
+.device-log{background:#0f1117;color:#d4d4d4;font-family:'Consolas','Monaco',monospace;font-size:.78em;line-height:1.55;padding:10px 14px;border-radius:8px;max-height:220px;overflow-y:auto;margin:12px 0;white-space:pre-wrap;word-break:break-all;display:none}
+.device-summary{background:#f0fff4;border-radius:8px;padding:12px 14px;font-size:.84em;margin-top:10px;display:none;line-height:1.7}
+.device-summary.err{background:#fff5f5}
 .hist-item{display:flex;justify-content:space-between;align-items:center;padding:11px 13px;border:1px solid #eee;border-radius:8px;margin-bottom:7px;transition:all .2s}
 .hist-item:hover{background:#f8f9ff;border-color:#c5cff5}
 .hist-name{font-weight:600;font-size:.88em;color:#333;margin-bottom:2px}
@@ -134,7 +147,7 @@ select:focus,input:focus{border-color:#667eea}
 <body>
 <div class="container">
 <div class="header">
-  <h1>🚀 PT → RKNN 多模型转换工具 <small style="font-size:0.55em;opacity:0.75;font-weight:400;">v0.0.1</small></h1>
+  <h1>🚀 PT → RKNN 多模型转换工具 <small style="font-size:0.55em;opacity:0.75;font-weight:400;">v0.0.3</small></h1>
   <p>支持 YOLOv8-Det / Seg / Pose / OBB &nbsp;·&nbsp; ResNet &nbsp;·&nbsp; RetinaFace</p>
 </div>
 <div class="steps">
@@ -512,7 +525,7 @@ async function doConvert() {
         ab.className='abtn show';
         ab.innerHTML=`<a href="${d.download_url}" class="dlb green">⬇️ 下载 RKNN</a>
           <button class="dlb purple" onclick="previewModel('${d.output_file}')">👁 Netron 预览</button>
-          <button class="dlb orange" onclick="openInferModal('${d.output_file}','${selMeta?selMeta.value:''}','${selMeta?selMeta.input_size_default[0]:640}','${selMeta?selMeta.input_size_default[1]:640}')">🧪 推理测试</button>`;
+          <button class="dlb orange" onclick="openInferModal('${d.output_file}','${selMeta?selMeta.value:''}','${selMeta?selMeta.input_size_default[0]:640}','${selMeta?selMeta.input_size_default[1]:640}')">🧪 电脑端基线</button>`;
         loadHistory();
       } else {
         showRmsg('error','❌ 转换失败：<br><pre style="font-size:.82em;margin-top:5px;white-space:pre-wrap">'+d.message+'</pre>');
@@ -578,7 +591,8 @@ async function loadHistory() {
         <div class="hist-item">
           <div><div class="hist-name">${f.filename}</div><div class="hist-meta">${f.size} · ${f.time}</div></div>
           <div class="hist-acts">
-            <button class="dlb orange" style="font-size:.8em;padding:6px 13px" onclick="openInferModal('${f.filename}','${f.model_type}','${f.input_w}','${f.input_h}')">🧪 测试</button>
+            <button class="dlb orange" style="font-size:.8em;padding:6px 13px" onclick="openInferModal('${f.filename}','${f.model_type}','${f.input_w}','${f.input_h}')">🧪 电脑端基线</button>
+            <button class="dlb teal" style="font-size:.8em;padding:6px 13px" onclick="openDeviceModal('${f.filename}')">🔧 设备验收</button>
             <button class="dlb purple" style="font-size:.8em;padding:6px 13px" onclick="previewModel('${f.filename}')">👁 预览</button>
             <a href="${f.download_url}" class="dlb green" style="font-size:.8em;padding:6px 13px">⬇️ 下载</a>
             <button class="dlb" style="font-size:.8em;padding:6px 13px;background:#e74c3c;color:#fff;border:none;border-radius:6px;cursor:pointer" onclick="deleteFile('${f.filename}')">🗑 删除</button>
@@ -715,7 +729,7 @@ async function runInference() {
 }
 
 // ═══════════════════════════════════════
-// 量化精度分析
+// 转换图误差分析
 // ═══════════════════════════════════════
 async function runAccuracyAnalysis() {
   if(!inferFile || !inferFilename) return;
@@ -736,7 +750,8 @@ async function runAccuracyAnalysis() {
     const d = await res.json();
     if(d.success) {
       document.getElementById('accModeTag').textContent = d.quant_mode || '';
-      document.getElementById('accSummary').textContent = d.summary || '';
+      document.getElementById('accSummary').textContent =
+        [d.analysis_scope, d.summary].filter(Boolean).join('\n\n');
       if(d.layers && d.layers.length > 0) {
         document.getElementById('accLayerTable').innerHTML = _renderLayerTable(d.layers);
       } else if(d.raw_text && d.raw_text.trim()) {
@@ -753,7 +768,7 @@ async function runAccuracyAnalysis() {
     document.getElementById('accSummary').textContent = '\u274c \u8bf7\u6c42\u5931\u8d25: ' + e.message;
     document.getElementById('accResult').className = 'infer-result show';
   } finally {
-    btn.disabled = false; btn.textContent = '\U0001f52c \u7cbe\u5ea6\u5206\u6790';
+    btn.disabled = false; btn.textContent = '转换图误差分析';
   }
 }
 
@@ -787,6 +802,174 @@ function stepMark(n,state){
   const sep=document.getElementById('sep'+(n-1));
   if(sep) sep.className='step-sep '+(state?'done':'');
 }
+// ═══════════════════════════════════════
+// 设备验收 Modal（SSH 连接局域网 RK35xx 设备）
+// ═══════════════════════════════════════
+let devFilename = '';
+let devEs = null;
+
+function openDeviceModal(filename) {
+  devFilename = filename;
+  document.getElementById('deviceOverlay').style.display = 'flex';
+  document.getElementById('deviceModelTag').textContent = filename;
+  document.getElementById('devConnStatus').className = 'calib-status';
+  document.getElementById('devLog').style.display = 'none';
+  document.getElementById('devLog').textContent = '';
+  document.getElementById('devSummary').className = 'device-summary';
+  document.getElementById('devSummary').innerHTML = '';
+  document.getElementById('devRunBtn').disabled = false;
+  document.getElementById('devRunBtn').textContent = '🚀 开始设备验收';
+  fetch('/api/meta/'+filename).then(r=>r.json()).then(d=>{
+    if(d.success && d.class_names && d.class_names.length)
+      document.getElementById('devClassNames').value = d.class_names.join(',');
+  }).catch(()=>{});
+}
+
+function closeDeviceModal() {
+  document.getElementById('deviceOverlay').style.display = 'none';
+  if(devEs) { devEs.close(); devEs = null; }
+}
+
+function onDevAuthModeChange() {
+  const isKey = document.querySelector('input[name="devAuthMode"]:checked').value === 'key';
+  document.getElementById('devPasswordRow').style.display = isKey ? 'none' : '';
+  document.getElementById('devKeyRow').style.display = isKey ? '' : 'none';
+}
+
+function onDevImagesModeChange() {
+  const isUpload = document.querySelector('input[name="devImagesMode"]:checked').value === 'upload';
+  document.getElementById('devLocalImagesRow').style.display = isUpload ? '' : 'none';
+  document.getElementById('devRemoteImagesRow').style.display = isUpload ? 'none' : '';
+}
+
+function devCredentials() {
+  const authMode = document.querySelector('input[name="devAuthMode"]:checked').value;
+  const cred = {
+    host: document.getElementById('devHost').value.trim(),
+    port: parseInt(document.getElementById('devPort').value) || 22,
+    username: document.getElementById('devUsername').value.trim(),
+  };
+  if(authMode === 'key') {
+    cred.key_text = document.getElementById('devKeyText').value;
+    cred.key_passphrase = document.getElementById('devKeyPassphrase').value;
+  } else {
+    cred.password = document.getElementById('devPassword').value;
+  }
+  return cred;
+}
+
+async function testDeviceConnection() {
+  const st = document.getElementById('devConnStatus');
+  const cred = devCredentials();
+  if(!cred.host || !cred.username) {
+    st.className = 'calib-status show err'; st.textContent = '⚠ 请填写设备地址和用户名'; return;
+  }
+  st.className = 'calib-status show info'; st.textContent = '⏳ 正在连接设备...';
+  try {
+    const res = await fetch('/api/device/test-connection', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cred)
+    });
+    const d = await res.json();
+    if(d.success) {
+      st.className = d.npu_access ? 'calib-status show ok' : 'calib-status show err';
+      const npuText = d.npu_access ? `✔ NPU 可访问：${d.npu_device||'已检测'}` : `✘ ${d.npu_warning||'NPU 不可访问'}`;
+      st.innerHTML = `✔ SSH 连接成功 · Python ${d.python_version||'?'} · rknnlite ${d.rknnlite_version||'未检测到'}<br>${npuText}<br><span style="opacity:.7">${d.uname||''}</span>`;
+    } else {
+      st.className = 'calib-status show err'; st.textContent = '✘ ' + d.message;
+    }
+  } catch(e) {
+    st.className = 'calib-status show err'; st.textContent = '✘ 请求失败：' + e.message;
+  }
+}
+
+async function runDeviceValidation() {
+  const cred = devCredentials();
+  if(!cred.host || !cred.username) { alert('请填写设备地址和用户名'); return; }
+  if(!cred.password && !cred.key_text) { alert('请提供密码或私钥'); return; }
+
+  const imagesMode = document.querySelector('input[name="devImagesMode"]:checked').value;
+  const body = {
+    ...cred,
+    rknn_filename: devFilename,
+    images_mode: imagesMode,
+    local_images_dir: document.getElementById('devLocalImagesDir').value.trim(),
+    remote_images_path: document.getElementById('devRemoteImagesPath').value.trim(),
+    classes: document.getElementById('devClassNames').value.trim(),
+    conf: parseFloat(document.getElementById('devConf').value) || 0.001,
+    iou: parseFloat(document.getElementById('devIou').value) || 0.65,
+    warmup: parseInt(document.getElementById('devWarmup').value) || 3,
+    remote_workdir: document.getElementById('devRemoteWorkdir').value.trim() || '~/pt2rknn-device-validate',
+  };
+  if(imagesMode === 'upload' && !body.local_images_dir) { alert('请填写本机验证图片目录'); return; }
+  if(imagesMode === 'remote_path' && !body.remote_images_path) { alert('请填写设备上图片目录路径'); return; }
+
+  const btn = document.getElementById('devRunBtn');
+  btn.disabled = true; btn.textContent = '⏳ 验收中…';
+  const logEl = document.getElementById('devLog');
+  logEl.style.display = 'block'; logEl.textContent = '';
+  const summaryEl = document.getElementById('devSummary');
+  summaryEl.className = 'device-summary'; summaryEl.innerHTML = '';
+
+  try {
+    const res = await fetch('/api/device/validate', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    const d = await res.json();
+    if(!d.started) {
+      logEl.textContent += '✘ ' + (d.message||'启动失败') + '\n';
+      btn.disabled = false; btn.textContent = '🚀 开始设备验收';
+      return;
+    }
+    if(devEs) devEs.close();
+    devEs = new EventSource('/api/device/validate/log/' + d.job_id);
+    devEs.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if(msg.type === 'ping') return;
+      if(msg.type === 'log') {
+        logEl.textContent += msg.data + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      } else if(msg.type === 'done') {
+        btn.disabled = false; btn.textContent = '🚀 开始设备验收';
+        devEs.close(); devEs = null;
+        renderDeviceSummary(msg.data);
+      }
+    };
+    devEs.onerror = () => {
+      if(devEs && devEs.readyState === EventSource.CLOSED) {
+        btn.disabled = false; btn.textContent = '🚀 开始设备验收';
+      }
+    };
+  } catch(e) {
+    logEl.textContent += '✘ 请求失败：' + e.message + '\n';
+    btn.disabled = false; btn.textContent = '🚀 开始设备验收';
+  }
+}
+
+function renderDeviceSummary(data) {
+  const el = document.getElementById('devSummary');
+  const dirLine = data.remote_task_dir
+    ? `<div style="margin-top:6px;font-size:.8em;opacity:.75">设备端目录：${data.remote_host||''}:${data.remote_task_dir}</div>` : '';
+  if(!data.success) {
+    el.className = 'device-summary err show';
+    el.innerHTML = `✘ ${data.message}${dirLine}`;
+    return;
+  }
+  el.className = 'device-summary show';
+  const s = (data.report && data.report.summary) || {};
+  const lat = s.latency_ms || {};
+  const shaTag = data.model_sha256_match === true ? '✔ 一致' :
+                 data.model_sha256_match === false ? '⚠ 不一致' : '未比较';
+  el.innerHTML = `
+    <div>✔ ${data.message}</div>
+    <div style="margin-top:6px">图片：${s.successful_images||0}/${s.requested_images||0} 成功
+      ${s.failed_images ? `（${s.failed_images} 张失败）` : ''}</div>
+    <div>延迟(ms)：均值 ${(lat.mean||0).toFixed?lat.mean.toFixed(2):lat.mean||'-'}
+      · P50 ${lat.p50||'-'} · P95 ${lat.p95||'-'} · 最大 ${lat.max||'-'}</div>
+    <div>模型哈希校验：${shaTag}</div>
+    <div style="margin-top:6px;font-size:.8em;opacity:.7">报告已保存：${data.report_filename||''}</div>
+    ${dirLine}`;
+}
+
 init();
 setInterval(loadHistory,30000);
 </script>
@@ -795,7 +978,7 @@ setInterval(loadHistory,30000);
 <div class="infer-overlay" id="inferOverlay" style="display:none" onclick="if(event.target===this)closeInferModal()">
   <div class="infer-modal">
     <div class="infer-modal-header">
-      <h3>🧪 推理测试 <span class="infer-meta-tag" id="inferModelTag">-</span></h3>
+      <h3>🧪 电脑端 ONNX 基线 <span class="infer-meta-tag" id="inferModelTag">-</span></h3>
       <button class="infer-close-btn" onclick="closeInferModal()">✕</button>
     </div>
     <div class="infer-modal-body">
@@ -814,16 +997,16 @@ setInterval(loadHistory,30000);
         <label>类别名称（逗号分隔，空则默认 cls0/cls1/…）</label>
         <input type="text" id="inferClassNames" placeholder="例：cat,dog,person 或留空">
       </div>
-      <button class="infer-run-btn" id="inferRunBtn" onclick="runInference()" disabled>🚀 开始推理</button>
+      <button class="infer-run-btn" id="inferRunBtn" onclick="runInference()" disabled>运行 ONNX FP 基线</button>
       <div style="display:flex;align-items:center;margin-bottom:14px">
-        <button class="infer-run-btn acc" id="accuracyRunBtn" onclick="runAccuracyAnalysis()" disabled>🔬 精度分析</button>
-        <label style="font-size:.82em;color:#666;margin-left:12px;cursor:pointer" title="对 i8 模型用单张测试图快速量化，对比 ONNX vs INT8 RKNN 误差（非生产级校准）">
-          <input type="checkbox" id="accDoQuant" style="margin-right:4px">INT8 量化对比（i8 模型专用）
+        <button class="infer-run-btn acc" id="accuracyRunBtn" onclick="runAccuracyAnalysis()" disabled>转换图误差分析</button>
+        <label style="font-size:.82em;color:#666;margin-left:12px;cursor:pointer" title="使用转换时的图和原校准清单重建分析模型；最终精度需在 RK35xx 设备验收">
+          <input type="checkbox" id="accDoQuant" style="margin-right:4px">INT8 同配置重建
         </label>
       </div>
       <div class="infer-result" id="accResult">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <strong style="font-size:.9em">📊 量化精度分析</strong>
+          <strong style="font-size:.9em">转换图误差分析（非真机最终精度）</strong>
           <span id="accModeTag" style="font-size:.78em;color:#888;background:#f0f4ff;padding:2px 8px;border-radius:10px"></span>
         </div>
         <div class="infer-summary" id="accSummary" style="white-space:pre-wrap"></div>
@@ -837,6 +1020,77 @@ setInterval(loadHistory,30000);
         <img id="inferResultImg" src="" alt="result">
         <div class="infer-summary" id="inferSummary"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="device-overlay" id="deviceOverlay" style="display:none" onclick="if(event.target===this)closeDeviceModal()">
+  <div class="device-modal">
+    <div class="device-modal-header">
+      <h3>🔧 RK35xx 设备验收 <span class="infer-meta-tag" id="deviceModelTag" style="background:rgba(255,255,255,.25);color:#fff">-</span></h3>
+      <button class="infer-close-btn" onclick="closeDeviceModal()">✕</button>
+    </div>
+    <div class="device-modal-body">
+      <div class="device-hint">通过 SSH 连接局域网 RK35xx 设备，上传模型和验收脚本、远程执行批量推理，再把 JSON 报告下载回本机。仅在真机 NPU 上运行的结果才代表最终性能；无标注图片时不能得出 mAP/Precision/Recall。</div>
+
+      <div class="fg" style="margin-bottom:10px">
+        <label>设备地址 (Host)</label>
+        <input type="text" id="devHost" placeholder="例：192.168.8.20">
+      </div>
+      <div class="form-row">
+        <div class="fg"><label>SSH 端口</label><input type="number" id="devPort" value="22"></div>
+        <div class="fg"><label>用户名</label><input type="text" id="devUsername" placeholder="例：sky"></div>
+      </div>
+      <div class="device-radio-row">
+        <label><input type="radio" name="devAuthMode" value="password" checked onchange="onDevAuthModeChange()">密码</label>
+        <label><input type="radio" name="devAuthMode" value="key" onchange="onDevAuthModeChange()">私钥</label>
+      </div>
+      <div class="fg" id="devPasswordRow">
+        <label>密码</label>
+        <input type="password" id="devPassword" placeholder="仅用于本次连接，不会保存">
+      </div>
+      <div class="fg" id="devKeyRow" style="display:none">
+        <label>私钥内容（PEM 文本）</label>
+        <textarea id="devKeyText" rows="4" style="width:100%;padding:9px 11px;border:2px solid #e0e0e0;border-radius:8px;font-size:.82em;font-family:monospace" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+        <input type="password" id="devKeyPassphrase" placeholder="私钥密码（如有）" style="margin-top:6px">
+      </div>
+
+      <button class="dlb teal" style="width:100%;padding:9px;margin-bottom:14px" onclick="testDeviceConnection()">🔍 测试连接</button>
+      <div class="calib-status" id="devConnStatus"></div>
+
+      <div class="device-radio-row" style="margin-top:14px">
+        <label><input type="radio" name="devImagesMode" value="upload" checked onchange="onDevImagesModeChange()">从本机上传图片</label>
+        <label><input type="radio" name="devImagesMode" value="remote_path" onchange="onDevImagesModeChange()">使用设备上已有目录</label>
+      </div>
+      <div class="fg" id="devLocalImagesRow">
+        <label>本机验证图片目录</label>
+        <input type="text" id="devLocalImagesDir" placeholder="例：/mnt/e/datasets/val_images 或 E:\datasets\val_images">
+      </div>
+      <div class="fg" id="devRemoteImagesRow" style="display:none">
+        <label>设备上图片目录路径</label>
+        <input type="text" id="devRemoteImagesPath" placeholder="例：/home/sky/rknn-validation/images">
+      </div>
+
+      <div class="fg">
+        <label>类别名称（逗号分隔，留空则读取模型元数据）</label>
+        <input type="text" id="devClassNames" placeholder="例：no_vest,helmet,no_helmet,vest">
+      </div>
+      <div class="infer-params">
+        <div class="fg"><label>置信度阈值 (Conf)</label><input type="number" id="devConf" value="0.001" min="0" max="0.99" step="0.01"></div>
+        <div class="fg"><label>NMS 阈值 (IoU)</label><input type="number" id="devIou" value="0.65" min="0.1" max="0.99" step="0.05"></div>
+      </div>
+      <div class="fg">
+        <label>NPU 预热次数</label>
+        <input type="number" id="devWarmup" value="3" min="0" max="20">
+      </div>
+      <div class="fg">
+        <label>设备远程工作目录</label>
+        <input type="text" id="devRemoteWorkdir" value="~/pt2rknn-device-validate">
+      </div>
+
+      <button class="infer-run-btn acc" id="devRunBtn" style="margin-left:0" onclick="runDeviceValidation()">🚀 开始设备验收</button>
+      <div class="device-log" id="devLog"></div>
+      <div class="device-summary" id="devSummary"></div>
     </div>
   </div>
 </div>

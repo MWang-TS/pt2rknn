@@ -5,3 +5,4 @@ numpy>=1.23.0
 netron
 onnx>=1.14.0
 ultralytics
+paramiko==3.4.1

@@ -38,7 +38,8 @@ RUN pip install --no-cache-dir \
     numpy>=1.23.0 \
     netron \
     onnx>=1.14.0 \
-    ultralytics
+    ultralytics \
+    paramiko==3.4.1
 
 # ===== 重要：安装 rknn-toolkit2 =====
 # 先升级 pip，再从本地复制 whl 文件并安装
