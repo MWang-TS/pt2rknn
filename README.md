@@ -1,4 +1,4 @@
-# PT → RKNN 多模型转换工具 🚀 `v0.0.3`
+# PT → RKNN 多模型转换工具 🚀 `v0.0.4`
 
 一个基于 Web 界面的模型转换工具，将 PyTorch (.pt/.pth) 或 ONNX 模型转换为 RKNN 格式，专为 Rockchip NPU 设备优化。
 
@@ -253,6 +253,10 @@ cp /your/dataset/images/*.jpg calibration_data/yolov8_det/images/
 ---
 
 ## 📝 版本历史
+
+### v0.0.4 (2026-10-23)
+
+- **修复 Netron 预览误报升级**：Netron 前端在 `index.html` 的 `<meta name="date">` 距今超过 180 天时会死循环弹窗 “Please update to the newest version.”。`/api/preview` 启动前自动把该 meta 刷新为当天日期（Netron 每次请求都重读 index.html），只读环境下仅告警不影响预览
 
 ### v0.0.3 (2026-07-27)
 

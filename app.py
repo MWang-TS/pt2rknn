@@ -397,6 +397,41 @@ def get_free_port():
         return s.getsockname()[1]
 
 
+_netron_date_patched = False
+
+
+def _patch_netron_page_date():
+    """修正 Netron 自带的“Please update to the newest version.”误报。
+
+    Netron 前端 browser.js 会在 index.html 的 `<meta name="date">` 距今超过 180 天时，
+    进入死循环弹窗要求升级（即使已是最新版）。这里把该 meta 刷新为当天日期。
+    Netron 的 HTTP 服务每次请求都会重新读取 index.html，所以只需在启动前改一次。
+    """
+    global _netron_date_patched
+    if _netron_date_patched or not NETRON_AVAILABLE:
+        return
+    try:
+        index_path = os.path.join(os.path.dirname(os.path.realpath(netron.__file__)), 'index.html')
+        if not os.path.exists(index_path):
+            return
+        today = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())
+        with open(index_path, 'r', encoding='utf-8') as f:
+            html = f.read()
+        new_html, count = re.subn(
+            r'<meta name="date" content="[^"]*">',
+            '<meta name="date" content="%s">' % today,
+            html,
+            count=1,
+        )
+        if count and new_html != html:
+            with open(index_path, 'w', encoding='utf-8', newline='') as f:
+                f.write(new_html)
+            app.logger.info('Netron 页面日期已刷新为 %s（避免误报升级提示）', today)
+        _netron_date_patched = True
+    except Exception as exc:            # 只读环境（如容器内非 root）时忽略
+        app.logger.warning('刷新 Netron 页面日期失败（可忽略）: %s', exc)
+
+
 @app.route('/api/calibration/status', methods=['GET'])
 def calibration_status():
     """查询各模型类型校准数据集是否就绪"""
@@ -505,6 +540,7 @@ def preview_model():
         if not os.path.exists(file_path):
             return jsonify({'success': False, 'message': '文件不存在'}), 404
 
+        _patch_netron_page_date()
         port = get_free_port()
         host, port = netron.start(file_path, address=('0.0.0.0', port), browse=False)
         return jsonify({'success': True, 'url': f'http://localhost:{port}'})
