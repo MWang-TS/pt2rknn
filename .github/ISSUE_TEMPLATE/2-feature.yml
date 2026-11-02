@@ -1,0 +1,37 @@
+name: 功能建议
+description: 描述使用场景与价值，而不只是想要一个按钮。
+title: "[Feature]: "
+labels: ["feature", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        建议越具体，越容易被评估。闭源产品的路线建议，以及打不开 GitHub 时的提交，可走国内表单：https://feedback.tsagent.cc/
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景与当前阻碍
+      description: 你在完成什么任务？现在卡在哪里？发生频率如何？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议的解决方式
+      description: 描述期望的输入、输出或交互；如有多个方案可并列。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已尝试的替代方案
+      description: 目前用什么 workaround？它有什么不足？
+    validations:
+      required: false
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: 贡献意愿（可选）
+      options:
+        - label: 我愿意参与讨论、验证原型或提交 PR。
+          required: false
