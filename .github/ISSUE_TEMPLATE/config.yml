@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 闭源产品与隐私反馈
+    url: https://feedback.tsagent.cc/
+    about: Easy Post、Dr T 等闭源产品，以及包含日志或隐私信息的反馈，请走私密通道。
+  - name: 安全漏洞报告
+    url: mailto:security@tsagent.cc
+    about: 请不要在公开 issue 披露漏洞细节、密钥或 exploit。
+  - name: 产品官网与文档
+    url: https://tsagent.cc/
+    about: 查看产品说明、下载入口与常见问题。
