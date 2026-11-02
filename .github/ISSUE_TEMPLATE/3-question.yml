@@ -1,0 +1,35 @@
+name: 使用咨询
+description: 开源项目的安装、配置与使用方法问题。
+title: "[Question]: "
+labels: ["question", "needs-triage"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: 你想完成什么
+      description: 描述目标任务，而不仅是报错标题。
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: 已尝试的方法与结果
+      description: 列出已查看的文档、已执行的步骤和实际结果。
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 版本与系统
+      placeholder: 例如 0.0.6 / Windows 11 / 后端已连接
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我已查看 README/文档并搜索已有 issue。
+          required: true
+        - label: 本内容不含隐私数据、密钥或安全漏洞细节。
+          required: true
