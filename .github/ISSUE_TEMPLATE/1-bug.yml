@@ -1,0 +1,80 @@
+name: Bug 反馈
+description: 报告一个可复现的问题。闭源产品、隐私日志与安全问题请使用右侧其他入口。
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。提交前请确认：
+        - 你反馈的是本仓库对应的开源项目；同名但不同用途的项目请核对仓库地址。
+        - 内容不包含原始数据集、模型权重、客户名称、账号密码、密钥或未脱敏日志。
+        - 安全漏洞请发送 security@tsagent.cc，不要在此公开。
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本
+      description: 在应用“关于”页面或发布包文件名中查看。
+      placeholder: 例如 0.0.6
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - 其他（请在描述中说明）
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 实际行为与期望行为
+      description: 分别说明发生了什么，以及你原本预期发生什么。
+      placeholder: 实际：……\n期望：……
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 最小复现步骤
+      description: 用编号列出从启动应用到出现问题的最短路径；若与特定输入有关，请描述输入特征，不要上传机密原数据。
+      placeholder: |
+        1. 打开……
+        2. 点击……
+        3. 出现……
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境与后端状态
+      description: 桌面端请填写后端服务状态、依赖环境检测结果；不涉及可写“不适用”。
+      placeholder: 例如：后端已连接；Conda 环境 yolov8-minimal；缺少依赖无。
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志（已脱敏）
+      description: 仅粘贴相关片段；删除路径中的用户名、内网地址、token 与业务数据。
+      render: shell
+    validations:
+      required: false
+  - type: upload
+    id: screenshots
+    attributes:
+      label: 截图或录屏（已脱敏）
+      description: 如适用，请添加能帮助定位问题的截图。
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我已搜索已有 issue，并确认本内容不含敏感信息或安全漏洞细节。
+          required: true
